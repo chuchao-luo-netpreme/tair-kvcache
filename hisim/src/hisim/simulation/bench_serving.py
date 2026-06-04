@@ -870,8 +870,8 @@ def get_dataset(args, tokenizer, model_id=None):
     elif args.dataset_name == "codex-swebenchpro-traces":
         input_requests = sample_agentic_trace_requests(
             args.dataset_path,
-            args.num_prompts,
             tokenizer=tokenizer,
+            num_requests=None,
             context_len=args.agentic_trace_context_len,
         )
     else:
@@ -1724,8 +1724,8 @@ def sample_generated_shared_prefix_requests(
 
 def sample_agentic_trace_requests(
     dataset_path: str,
-    num_requests: int,
     tokenizer: PreTrainedTokenizerBase,
+    num_requests: Optional[int] = None,
     context_len: Optional[int] = None,
 ) -> List[DatasetRow]:
     """Unfold multi-turn agentic traces into one request per assistant turn.
@@ -1756,7 +1756,7 @@ def sample_agentic_trace_requests(
 
     input_requests: List[DatasetRow] = []
     for conv_data in raw_conversations:
-        if len(input_requests) >= num_requests:
+        if num_requests and len(input_requests) >= num_requests:
             break
         turns = conv_data.get("conversations", conv_data.get("conversation", []))
         messages: List[dict] = []
@@ -1789,7 +1789,7 @@ def sample_agentic_trace_requests(
                         output_len=output_len,
                     )
                 )
-                if len(input_requests) >= num_requests:
+                if num_requests and len(input_requests) >= num_requests:
                     break
             messages.append({"role": role, "content": turn["value"]})
 
