@@ -2,6 +2,48 @@ from hisim.spec.accelerator.base import AcceleratorInfo
 
 
 class NVIDIA:
+    NVIDIA_H100 = AcceleratorInfo.from_dict(
+        config={
+            "name": "NVIDIA H100",
+            "device_alias": ["H100", "h100_sxm"],
+            "tflops": {
+                "FP8_TENSOR": 3958,
+                "INT8_TENSOR": 3958,
+                "FP16_TENSOR": 1979,
+                "BF16_TENSOR": 1979,
+                "FP32": 67,
+            },
+            "hbm_capacity_gb": 80,
+            "hbm_bandwidth_gb": 3350,
+            "inter_node_bandwidth_gb": 400,
+            "intra_node_bandwidth_gb": 450,
+            "vendor": "NVIDIA",
+            "ref": "https://www.nvidia.com/en-us/data-center/h100/",
+        },
+        save_to_registry=True,
+    )
+
+    NVIDIA_H200 = AcceleratorInfo.from_dict(
+        config={
+            "name": "NVIDIA H200",
+            "device_alias": ["H200", "h200_sxm"],
+            "tflops": {
+                "FP8_TENSOR": 3958,
+                "INT8_TENSOR": 3958,
+                "FP16_TENSOR": 1979,
+                "BF16_TENSOR": 1979,
+                "FP32": 67,
+            },
+            "hbm_capacity_gb": 141,
+            "hbm_bandwidth_gb": 4800,
+            "inter_node_bandwidth_gb": 400,
+            "intra_node_bandwidth_gb": 450,
+            "vendor": "NVIDIA",
+            "ref": "https://www.nvidia.com/en-us/data-center/h200/",
+        },
+        save_to_registry=True,
+    )
+
     NVIDIA_H20 = AcceleratorInfo.from_dict(
         config={
             "name": "NVIDIA H20",
