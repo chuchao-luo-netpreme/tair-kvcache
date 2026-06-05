@@ -432,6 +432,19 @@ class C_HiRadixCacheHook(BaseHook):
     def hook(cls, target):
         original_check_hicache_events = target.check_hicache_events
         original_reset = target.reset
+        # https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/hiradix_cache.py#L1271
+        original_evict = target.evict
+
+        def wrapped_evict(self, params):
+            evictable_before = getattr(self, "evictable_size_", "N/A")
+            result = original_evict(self, params)
+            evictable_after = getattr(self, "evictable_size_", "N/A")
+            num_tokens = params if isinstance(params, int) else getattr(params, "num_tokens", params)
+            logger.info(
+                f"L1 eviction: requested={num_tokens} evictable_before={evictable_before} "
+                f"evictable_after={evictable_after} freed={evictable_before - evictable_after if isinstance(evictable_before, int) else 'N/A'}"
+            )
+            return result
 
         def wrapped_reset(self):
             if hasattr(self, "cache_controller"):
@@ -543,6 +556,7 @@ class C_HiRadixCacheHook(BaseHook):
         target.__init__ = override_init
         target.check_hicache_events = wrapped_check_hicache_events
         target.reset = wrapped_reset
+        target.evict = wrapped_evict
 
 
 class C_StorageBackendFactory(BaseHook):
