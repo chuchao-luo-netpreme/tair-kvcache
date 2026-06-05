@@ -329,6 +329,9 @@ class MockTokenToKVPool:
         # default state for optional layer-wise transfer control
         self.layer_transfer_counter = None
 
+        
+        self.original_head_num = head_num
+        self.original_head_dim = head_dim
         # NOTE: Overwrite with 1x1 to avoid allocating actual KV memory in simulation
         self.head_num = 1
         self.head_dim = 1
@@ -864,8 +867,8 @@ class MockTokenToKVPoolHost:
 
     def get_size_per_token(self):
         # MHA implementation
-        self.head_num = self.device_pool.head_num
-        self.head_dim = self.device_pool.head_dim
+        self.head_num = self.device_pool.original_head_num
+        self.head_dim = self.device_pool.original_head_dim
         self.layer_num = self.device_pool.layer_num
 
         return self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2

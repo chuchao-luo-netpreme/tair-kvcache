@@ -42,6 +42,8 @@ BW_ARGS=()
 [ -n "${WRITE_BW}" ] && BW_ARGS+=(--sim_memory_write_bandwidth_gb "${WRITE_BW}")
 
 HISIM_RESET_HICACHE_STORAGE=1 \
+SGLANG_USE_CPU_ENGINE=1 \
+FLASHINFER_DISABLE_VERSION_CHECK=1 \
 python3 -m hisim.simulation.sglang.launch_server \
   --model-path "Qwen/Qwen3-32B" \
   --sim-config-path test/assets/mock/config.qwen3_32b.h100.json \
