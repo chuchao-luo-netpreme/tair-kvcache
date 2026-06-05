@@ -38,8 +38,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 BW_ARGS=()
-[ -n "${READ_BW}" ]  && BW_ARGS+=(--sim_memory_read_bandwidth_gb  "${READ_BW}")
-[ -n "${WRITE_BW}" ] && BW_ARGS+=(--sim_memory_write_bandwidth_gb "${WRITE_BW}")
+[ -n "${READ_BW}" ]  && BW_ARGS+=(--sim-memory-read-bandwidth-gb  "${READ_BW}")
+[ -n "${WRITE_BW}" ] && BW_ARGS+=(--sim-memory-write-bandwidth-gb "${WRITE_BW}")
 
 HISIM_RESET_HICACHE_STORAGE=1 \
 SGLANG_USE_CPU_ENGINE=1 \

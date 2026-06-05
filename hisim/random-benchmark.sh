@@ -7,8 +7,7 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Benchmark hisim simulation server using the codex-swebenchpro-traces dataset
-(multi-turn agentic traces from Inferact/codex_swebenchpro_traces on HuggingFace).
+Benchmark hisim simulation server using random requests (input=30000, output=1024, zrange=1).
 Sweeps over all combinations of hicache-size × bandwidth × request-rate.
 Starts a fresh server for each combination (HISIM_RESET_HICACHE_STORAGE=1).
 
@@ -17,7 +16,7 @@ Options:
   --rates RATES                 Comma-separated request rates (default: 1).
   --hicache-size SIZES          Comma-separated L2 DRAM cache sizes in GB (default: 500).
   --hicache-rw-bandwidth BWS    Comma-separated DRAM read+write bandwidths in GB/s (default: 64).
-  --output-dir DIR              Directory for results (default: ./codex_bench_metrics).
+  --output-dir DIR              Directory for results (default: ./random_bench_metrics).
   -h, --help                    Show this help message and exit.
 
 Output: OUTPUT_DIR/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS.json
@@ -28,24 +27,24 @@ PORT=12345
 RATES="1"
 HICACHE_SIZES="500"
 HICACHE_BWS="64"
-OUTPUT_DIR="${SCRIPT_DIR}/codex_bench_metrics"
+OUTPUT_DIR="${SCRIPT_DIR}/random_bench_metrics"
 SERVER_PID=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --port)                PORT="$2";         shift 2 ;;
-    --rates)               RATES="$2";        shift 2 ;;
+    --port)                PORT="$2";          shift 2 ;;
+    --rates)               RATES="$2";         shift 2 ;;
     --hicache-size)        HICACHE_SIZES="$2"; shift 2 ;;
     --hicache-rw-bandwidth) HICACHE_BWS="$2"; shift 2 ;;
-    --output-dir)          OUTPUT_DIR="$2";   shift 2 ;;
+    --output-dir)          OUTPUT_DIR="$2";    shift 2 ;;
     -h|--help)             usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
 done
 
-IFS=',' read -ra request_rates  <<< "$RATES"
-IFS=',' read -ra hicache_sizes  <<< "$HICACHE_SIZES"
-IFS=',' read -ra hicache_bws    <<< "$HICACHE_BWS"
+IFS=',' read -ra request_rates <<< "$RATES"
+IFS=',' read -ra hicache_sizes <<< "$HICACHE_SIZES"
+IFS=',' read -ra hicache_bws   <<< "$HICACHE_BWS"
 
 start_server() {
   local size="$1"
@@ -71,7 +70,11 @@ bench() {
   python3 -m hisim.simulation.bench_serving \
     --backend sglang \
     --port "${PORT}" \
-    --dataset-name codex-swebenchpro-traces \
+    --dataset-name random \
+    --random-input-len 30000 \
+    --random-output-len 1024 \
+    --random-range-ratio 1 \
+    --num-prompts 10 \
     --request-rate "${rate}" \
     --bench-mode simulation \
     --warmup-requests 0 \
