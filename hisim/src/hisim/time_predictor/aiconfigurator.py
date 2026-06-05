@@ -330,6 +330,34 @@ def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.Ba
                 ]
             }
         )
+    elif model.model_type == "gpt_oss":
+        # SDK hardcodes window_size=128 only when model_name is "GPT_OSS_120B"/"GPT_OSS_20B".
+        # Map by expert count to the canonical SDK name so the lookup succeeds.
+        sdk_name = "GPT_OSS_120B" if model.n_routed_experts >= 64 else "GPT_OSS_20B"
+        SupportedModels.update(
+            {
+                sdk_name: [
+                    "MOE",
+                    model.num_hidden_layers,
+                    model.num_attention_heads,
+                    model.num_key_value_heads,
+                    model.head_dim,
+                    model.hidden_size,
+                    model.intermediate_size,
+                    model.vocab_size,
+                    model.max_seq_len,
+                    model.num_experts_per_tok,
+                    model.n_routed_experts,
+                    model.moe_intermediate_size,
+                    None,
+                ]
+            }
+        )
+        return models.get_model(
+            model_name=sdk_name,
+            model_config=model_config,
+            backend_name=sched_config.backend_name,
+        )
     elif model.model_type in ["qwen3_moe"]:
         SupportedModels.update(
             {
