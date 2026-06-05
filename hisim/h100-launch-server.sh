@@ -46,7 +46,7 @@ SGLANG_USE_CPU_ENGINE=1 \
 FLASHINFER_DISABLE_VERSION_CHECK=1 \
 python3 -m hisim.simulation.sglang.launch_server \
   --model-path "Qwen/Qwen3-32B" \
-  --sim-config-path test/assets/mock/config.qwen3_32b.h100.json \
+  --sim-config-path test/assets/mock/config.qwen3_32b_fp8.h100.json \
   --skip-server-warmup \
   --port "${PORT:-12345}" \
   --enable-hierarchical-cache \

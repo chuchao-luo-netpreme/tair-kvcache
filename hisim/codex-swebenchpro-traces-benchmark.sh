@@ -11,7 +11,6 @@ Runs one warmup pass to populate L2/L3 cache, then sweeps over request rates.
 
 Options:
   --server-url URL    Base URL of the running hisim server (default: http://localhost:12345).
-  --model MODEL       Model name or path (default: Qwen/Qwen3-32B).
   --rates RATES       Comma-separated request rates to sweep (default: 1,2,4,8,16).
   --output-dir DIR    Directory to write per-rate results (default: ./data/codex-swebenchpro-traces).
   --skip-warmup       Skip the warmup pass.
@@ -31,7 +30,6 @@ EOF
 }
 
 SERVER_URL="http://localhost:12345"
-MODEL="Qwen/Qwen3-32B"
 RATES="1,2,4,8,16"
 OUTPUT_DIR="$(dirname "$0")/data/codex-swebenchpro-traces"
 SKIP_WARMUP=0
@@ -39,7 +37,6 @@ SKIP_WARMUP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --server-url)  SERVER_URL="$2"; shift 2 ;;
-    --model)       MODEL="$2";      shift 2 ;;
     --rates)       RATES="$2";      shift 2 ;;
     --output-dir)  OUTPUT_DIR="$2"; shift 2 ;;
     --skip-warmup) SKIP_WARMUP=1;   shift ;;
@@ -56,7 +53,6 @@ bench() {
   python3 -m hisim.simulation.bench_serving \
     --backend sglang \
     --base-url "${SERVER_URL}" \
-    --model "${MODEL}" \
     --dataset-name codex-swebenchpro-traces \
     --request-rate "${rate}" \
     --bench-mode simulation \
