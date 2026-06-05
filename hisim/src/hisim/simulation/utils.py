@@ -2,7 +2,10 @@ from hisim.spec.model import ModelInfo
 from hisim.spec.accelerator import AcceleratorInfo
 from hisim.simulation.types import SchedulerConfig, RequestStats
 from hisim.time_predictor.aiconfigurator import get_perf_model
+from hisim.utils.logger import get_logger
 import numpy as np
+
+logger = get_logger("hisim")
 
 
 def calc_attention_tp_size(tp_size: int) -> int:
@@ -85,6 +88,14 @@ def calc_metrics(requests: list[RequestStats]) -> dict:
     queue_durs = []
     for req in requests:
         if not req.is_complete():
+            continue
+        if not req.gen_token_latencies:
+            logger.error(
+                f"Request has empty gen_token_latencies, skipping: "
+                f"rid={req.rid!r} input_length={req.input_length} "
+                f"output_length={req.output_length} queue_start={req.queue_start:.3f} "
+                f"queue_end={req.queue_end:.3f} created_time={req.created_time:.3f}"
+            )
             continue
         completed += 1
         ttfts.append(req.gen_token_latencies[0])
