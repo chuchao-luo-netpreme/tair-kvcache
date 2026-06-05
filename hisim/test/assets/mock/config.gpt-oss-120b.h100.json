@@ -17,7 +17,7 @@
     },
     "scheduler": {
         "tp_size": 4,
-        "data_type": "BF16",
+        "data_type": "FP4",
         "kv_cache_data_type": "FP16",
         "backend_version": "0.5.6.post2"
     }
