@@ -1,58 +1,76 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
 Benchmark hisim simulation server using the codex-swebenchpro-traces dataset
 (multi-turn agentic traces from Inferact/codex_swebenchpro_traces on HuggingFace).
-Runs one warmup pass to populate L2/L3 cache, then sweeps over request rates.
+Sweeps over all combinations of hicache-size × bandwidth × request-rate.
+Starts a fresh server for each combination (HISIM_RESET_HICACHE_STORAGE=1).
 
 Options:
-  --server-url URL    Base URL of the running hisim server (default: http://localhost:12345).
-  --rates RATES       Comma-separated request rates to sweep (default: 1,2,4,8,16).
-  --output-dir DIR    Directory to write per-rate results (default: ./data/codex-swebenchpro-traces).
-  --skip-warmup       Skip the warmup pass.
-  -h, --help          Show this help message and exit.
+  --port PORT                   Server port (default: 12345).
+  --rates RATES                 Comma-separated request rates (default: 1,2,4,8,16).
+  --hicache-size SIZES          Comma-separated L2 DRAM cache sizes in GB (default: 500).
+  --hicache-rw-bandwidth BWS    Comma-separated DRAM read+write bandwidths in GB/s (default: 64).
+  --output-dir DIR              Directory for results (default: ./codex_bench_metrics).
+  -h, --help                    Show this help message and exit.
 
-Cache warming:
-  A single warmup pass fires all traces at maximum rate to populate L2 (DRAM)
-  and L3 (storage). With the default write_through policy (threshold=1), each
-  block is written to L3 on its first intra-conversation hit, so one pass is
-  sufficient. The warmup result is discarded; only the rate sweep is saved.
-
-  Between each rate, /flush_cache is called to reset the HBM (L1) KV cache.
-  Note: /flush_cache does NOT clear L2 (DRAM) or L3 (storage) in hisim —
-  MockTokenToKVPoolHost and MockHiCacheStorage are not reset by this call.
-  To fully reset all cache layers, restart the server.
+Output: OUTPUT_DIR/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS.json
 EOF
 }
 
-SERVER_URL="http://localhost:12345"
+PORT=12345
 RATES="1,2,4,8,16"
-OUTPUT_DIR="$(dirname "$0")/data/codex-swebenchpro-traces"
-SKIP_WARMUP=0
+HICACHE_SIZES="500"
+HICACHE_BWS="64"
+OUTPUT_DIR="${SCRIPT_DIR}/codex_bench_metrics"
+SERVER_PID=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --server-url)  SERVER_URL="$2"; shift 2 ;;
-    --rates)       RATES="$2";      shift 2 ;;
-    --output-dir)  OUTPUT_DIR="$2"; shift 2 ;;
-    --skip-warmup) SKIP_WARMUP=1;   shift ;;
-    -h|--help)     usage; exit 0 ;;
+    --port)                PORT="$2";         shift 2 ;;
+    --rates)               RATES="$2";        shift 2 ;;
+    --hicache-size)        HICACHE_SIZES="$2"; shift 2 ;;
+    --hicache-rw-bandwidth) HICACHE_BWS="$2"; shift 2 ;;
+    --output-dir)          OUTPUT_DIR="$2";   shift 2 ;;
+    -h|--help)             usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
 done
 
-IFS=',' read -ra request_rates <<< "$RATES"
+IFS=',' read -ra request_rates  <<< "$RATES"
+IFS=',' read -ra hicache_sizes  <<< "$HICACHE_SIZES"
+IFS=',' read -ra hicache_bws    <<< "$HICACHE_BWS"
+
+start_server() {
+  local size="$1"
+  local bw="$2"
+  "${SCRIPT_DIR}/h100-launch-server.sh" \
+    --port "${PORT}" \
+    --hicache-size "${size}" \
+    --read-bw "${bw}" \
+    --write-bw "${bw}" &
+  SERVER_PID=$!
+  until curl -sf "http://localhost:${PORT}/v1/models" > /dev/null 2>&1; do sleep 2; done
+}
+
+stop_server() {
+  kill -INT "${SERVER_PID}" 2>/dev/null || true
+  wait "${SERVER_PID}" 2>/dev/null || true
+  SERVER_PID=""
+}
 
 bench() {
   local rate="$1"
   local output_file="$2"
   python3 -m hisim.simulation.bench_serving \
     --backend sglang \
-    --base-url "${SERVER_URL}" \
+    --port "${PORT}" \
     --dataset-name codex-swebenchpro-traces \
     --request-rate "${rate}" \
     --bench-mode simulation \
@@ -60,14 +78,24 @@ bench() {
     --output-file "${output_file}"
 }
 
-if [[ "${SKIP_WARMUP}" -eq 0 ]]; then
-  curl -sf "${SERVER_URL}/flush_cache" > /dev/null
-  bench inf /dev/null
-fi
+TOTAL_RUNS=$(( ${#hicache_sizes[@]} * ${#hicache_bws[@]} * ${#request_rates[@]} ))
+CURRENT_RUN=0
 
-for rate in "${request_rates[@]}"; do
-  OUT_DIR="${OUTPUT_DIR}/${rate}"
-  mkdir -p "${OUT_DIR}"
-  curl -sf "${SERVER_URL}/flush_cache" > /dev/null
-  bench "${rate}" "${OUT_DIR}/metrics.json"
+trap 'stop_server' EXIT
+
+for size in "${hicache_sizes[@]}"; do
+  for bw in "${hicache_bws[@]}"; do
+    for rate in "${request_rates[@]}"; do
+      CURRENT_RUN=$(( CURRENT_RUN + 1 ))
+      PREFIX="[${CURRENT_RUN}/${TOTAL_RUNS}] DramSize=${size}gB DramBw=${bw}gB rate=${rate}RPS"
+      mkdir -p "${OUTPUT_DIR}"
+      echo "${PREFIX} — starting server..."
+      start_server "${size}" "${bw}"
+      echo "The server is fired up and ready to roll!"
+      echo "${PREFIX} — testing..."
+      bench "${rate}" "${OUTPUT_DIR}/DramSize${size}gB_DramBw${bw}gB_${rate}RPS.json"
+      echo "${PREFIX} — shutting down..."
+      stop_server
+    done
+  done
 done
