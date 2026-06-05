@@ -553,10 +553,24 @@ class C_HiRadixCacheHook(BaseHook):
             self.cache_controller.handle_prefetch_operation()
             return original_check_hicache_events(self, *args, **kwargs)
 
+        # https://github.com/sgl-project/sglang/blob/5c8bd8b51b53b9b39eb1edec582ee43b21002106/python/sglang/srt/mem_cache/hiradix_cache.py#L380
+        original_evict_host = target.evict_host
+        def wrapped_evict_host(self, num_tokens: int):
+            l2_before = self.token_to_kv_pool_host.available_size()
+            l2_total = self.token_to_kv_pool_host.size
+            original_evict_host(self, num_tokens)
+            l2_after = self.token_to_kv_pool_host.available_size()
+            logger.info(
+                f"L2 eviction: requested={num_tokens} freed={l2_after - l2_before} "
+                f"l2_available={l2_after}/{l2_total} "
+                f"({100 * (l2_total - l2_after) / l2_total:.1f}% used)"
+            )
+
         target.__init__ = override_init
         target.check_hicache_events = wrapped_check_hicache_events
         target.reset = wrapped_reset
         target.evict = wrapped_evict
+        target.evict_host = wrapped_evict_host
 
 
 class C_StorageBackendFactory(BaseHook):
