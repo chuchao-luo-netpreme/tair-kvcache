@@ -51,6 +51,8 @@ start_server() {
   local size="$1"
   local bw="$2"
   setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
+    --model-path "openai/gpt-oss-120b" \
+    --sim-config "test/assets/mock/config.gpt-oss-120b.h100.json" \
     --port "${PORT}" \
     --hicache-size "${size}" \
     --read-bw "${bw}" \
