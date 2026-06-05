@@ -6,6 +6,7 @@ import json
 import os
 import heapq
 import importlib
+import sys
 import threading
 from queue import Empty
 
@@ -435,14 +436,181 @@ class C_HiRadixCacheHook(BaseHook):
         # https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/hiradix_cache.py#L1271
         original_evict = target.evict
 
+        # FIXME: this is hacky. only for ad-hoc research
+        def get_eviction_reason_from_stack():
+            def frame_label(frame):
+                return (
+                    f"{frame.f_code.co_name}@"
+                    f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno}"
+                )
+
+            try:
+                frame = sys._getframe(2)
+            except ValueError:
+                return "unknown", "unknown"
+            while frame is not None:
+                filename = os.path.basename(frame.f_code.co_filename)
+                func_name = frame.f_code.co_name
+
+                if filename == "hiradix_cache.py":
+                    reasons = {
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/hiradix_cache.py#L410-L443
+                        "load_back": "hbm_pool_insufficient_to_load_l2_kv_cache",
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/hiradix_cache.py#L215-L221
+                        "write_backup": "l2_pool_insufficient_to_backup_hbm_kv_cache",
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/hiradix_cache.py#L705-L729
+                        "prefetch_from_storage": "l2_pool_insufficient_to_prefetch_storage_kv_cache",
+                    }
+                    if func_name in reasons:
+                        return reasons[func_name], frame_label(frame)
+
+                if filename == "common.py" and func_name == "evict_from_tree_cache":
+                    caller = frame.f_back
+                    if caller is None:
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/common.py#L227-L249
+                        return "hbm_pool_insufficient_to_allocate_kv_cache", frame_label(frame)
+
+                    caller_name = caller.f_code.co_name
+                    if caller_name == "alloc_token_slots":
+                        parent = caller.f_back
+                        parent_name = parent.f_code.co_name if parent is not None else None
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/common.py#L321-L357
+                        if parent_name == "alloc_for_extend":
+                            return (
+                                "hbm_pool_insufficient_to_allocate_prefill_kv_tokens",
+                                f"{frame_label(parent)} via {frame_label(caller)} "
+                                f"via {frame_label(frame)}",
+                            )
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/common.py#L421-L438
+                        if parent_name == "alloc_for_decode":
+                            return (
+                                "hbm_pool_insufficient_to_allocate_decode_kv_tokens",
+                                f"{frame_label(parent)} via {frame_label(caller)} "
+                                f"via {frame_label(frame)}",
+                            )
+
+                    caller_reasons = {
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/common.py#L252-L265
+                        "alloc_paged_token_slots_extend": "hbm_pool_insufficient_to_allocate_prefill_kv_tokens",
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/common.py#L392-L403
+                        "alloc_paged_token_slots_decode": "hbm_pool_insufficient_to_allocate_decode_kv_tokens",
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/managers/schedule_batch.py#L1588-L1597
+                        "check_decode_mem": "hbm_pool_insufficient_to_continue_decode_batch",
+                        # SGLang v0.5.6.post2:
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/managers/schedule_batch.py#L1681-L1692
+                        "release_req": "decode_request_retracted_to_reclaim_hbm_kv_tokens",
+                    }
+                    reason = caller_reasons.get(
+                        caller_name, "hbm_pool_insufficient_to_allocate_kv_cache"
+                    )
+                    return (
+                        reason,
+                        f"{frame_label(caller)} via {frame_label(frame)}",
+                    )
+
+                frame = frame.f_back
+
+            return "unknown", "unknown"
+
+        def pool_snapshot(pool):
+            if pool is None:
+                return {
+                    "available": "N/A",
+                    "total": "N/A",
+                    "used": "N/A",
+                    "used_ratio": "N/A",
+                }
+
+            try:
+                available = pool.available_size()
+                total = pool.size
+            except AttributeError:
+                return {
+                    "available": "N/A",
+                    "total": "N/A",
+                    "used": "N/A",
+                    "used_ratio": "N/A",
+                }
+
+            used = total - available
+            return {
+                "available": available,
+                "total": total,
+                "used": used,
+                "used_ratio": used / total if total > 0 else -1,
+            }
+
+        def format_eviction_stat(value):
+            if isinstance(value, float):
+                return f"{value:.6f}"
+            return value
+
+        def format_eviction_log(
+            level,
+            reason,
+            callsite,
+            requested,
+            before,
+            after,
+            evictable_before="N/A",
+            evictable_after="N/A",
+        ):
+            if isinstance(before["available"], int) and isinstance(
+                after["available"], int
+            ):
+                freed = after["available"] - before["available"]
+            else:
+                freed = "N/A"
+
+            return (
+                f"{level} eviction: reason={reason} callsite={callsite} "
+                f"requested={requested} "
+                f"available_before={format_eviction_stat(before['available'])} "
+                f"available_after={format_eviction_stat(after['available'])} "
+                f"total_before={format_eviction_stat(before['total'])} "
+                f"total_after={format_eviction_stat(after['total'])} "
+                f"used_before={format_eviction_stat(before['used'])} "
+                f"used_after={format_eviction_stat(after['used'])} "
+                f"used_ratio_before={format_eviction_stat(before['used_ratio'])} "
+                f"used_ratio_after={format_eviction_stat(after['used_ratio'])} "
+                f"freed={freed} "
+                f"evictable_before={evictable_before} "
+                f"evictable_after={evictable_after}"
+            )
+
         def wrapped_evict(self, params):
+            reason, callsite = get_eviction_reason_from_stack()
+            hbm_pool = getattr(self, "token_to_kv_pool_allocator", None)
+            pool_before = pool_snapshot(hbm_pool)
             evictable_before = getattr(self, "evictable_size_", "N/A")
             result = original_evict(self, params)
             evictable_after = getattr(self, "evictable_size_", "N/A")
-            num_tokens = params if isinstance(params, int) else getattr(params, "num_tokens", params)
+            pool_after = pool_snapshot(hbm_pool)
+            num_tokens = (
+                params
+                if isinstance(params, int)
+                else getattr(params, "num_tokens", params)
+            )
             logger.info(
-                f"L1 eviction: requested={num_tokens} evictable_before={evictable_before} "
-                f"evictable_after={evictable_after} freed={evictable_before - evictable_after if isinstance(evictable_before, int) else 'N/A'}"
+                format_eviction_log(
+                    "L1",
+                    reason,
+                    callsite,
+                    num_tokens,
+                    pool_before,
+                    pool_after,
+                    evictable_before,
+                    evictable_after,
+                )
             )
             return result
 
@@ -556,14 +724,20 @@ class C_HiRadixCacheHook(BaseHook):
         # https://github.com/sgl-project/sglang/blob/5c8bd8b51b53b9b39eb1edec582ee43b21002106/python/sglang/srt/mem_cache/hiradix_cache.py#L380
         original_evict_host = target.evict_host
         def wrapped_evict_host(self, num_tokens: int):
-            l2_before = self.token_to_kv_pool_host.available_size()
-            l2_total = self.token_to_kv_pool_host.size
+            reason, callsite = get_eviction_reason_from_stack()
+            l2_pool = getattr(self, "token_to_kv_pool_host", None)
+            pool_before = pool_snapshot(l2_pool)
             original_evict_host(self, num_tokens)
-            l2_after = self.token_to_kv_pool_host.available_size()
+            pool_after = pool_snapshot(l2_pool)
             logger.info(
-                f"L2 eviction: requested={num_tokens} freed={l2_after - l2_before} "
-                f"l2_available={l2_after}/{l2_total} "
-                f"({100 * (l2_total - l2_after) / l2_total:.1f}% used)"
+                format_eviction_log(
+                    "L2",
+                    reason,
+                    callsite,
+                    num_tokens,
+                    pool_before,
+                    pool_after,
+                )
             )
 
         target.__init__ = override_init
