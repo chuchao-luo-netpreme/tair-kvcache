@@ -940,8 +940,8 @@ class MockTokenToKVPoolHost:
         assert len(host_indices) == len(device_indices)
         num_indices = len(host_indices)
 
-        host = np.asarray(host_indices, dtype=np.int64)
-        dev = np.asarray(device_indices, dtype=np.int64)
+        host = np.asarray(host_indices.cpu() if hasattr(host_indices, "cpu") else host_indices, dtype=np.int64)
+        dev = np.asarray(device_indices.cpu() if hasattr(device_indices, "cpu") else device_indices, dtype=np.int64)
         cont = (np.diff(host) == 1) & (np.diff(dev) == 1)
         cut = np.flatnonzero(~cont) + 1
         starts = np.r_[0, cut]
@@ -968,8 +968,8 @@ class MockTokenToKVPoolHost:
         # update global clock
         num_indices = len(host_indices)
 
-        host = np.asarray(host_indices, dtype=np.int64)
-        dev = np.asarray(device_indices, dtype=np.int64)
+        host = np.asarray(host_indices.cpu() if hasattr(host_indices, "cpu") else host_indices, dtype=np.int64)
+        dev = np.asarray(device_indices.cpu() if hasattr(device_indices, "cpu") else device_indices, dtype=np.int64)
         cont = (np.diff(host) == 1) & (np.diff(dev) == 1)
         cut = np.flatnonzero(~cont) + 1
         starts = np.r_[0, cut]
