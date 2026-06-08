@@ -91,6 +91,7 @@ bench() {
     --request-rate "${rate}" \
     --bench-mode simulation \
     --warmup-requests 0 \
+    --tokenize-prompt \
     --output-file "${output_file}" \
     2>&1 | tee "${log_file}"
 }
