@@ -20,7 +20,9 @@ Options:
   -h, --help                    Show this help message and exit.
 
 Output:
-  OUTPUT_DIR/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS.json
+  OUTPUT_DIR/runs/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS/metrics.json
+  OUTPUT_DIR/runs/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS/request.jsonl
+  OUTPUT_DIR/runs/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS/iteration.jsonl
   OUTPUT_DIR/logs/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS_server.log
   OUTPUT_DIR/logs/DramSize<SIZE>gB_DramBw<BW>gB_<RATE>RPS_bench.log
 EOF
@@ -53,7 +55,9 @@ start_server() {
   local size="$1"
   local bw="$2"
   local log_file="$3"
-  setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
+  local sim_output_dir="$4"
+  HISIM_OUTPUT_DIR="${sim_output_dir}" \
+    setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
     --port "${PORT}" \
     --hicache-size "${size}" \
     --read-bw "${bw}" \
@@ -79,21 +83,22 @@ stop_server() {
 
 bench() {
   local rate="$1"
-  local output_file="$2"
-  local log_file="$3"
-  python3 -m hisim.simulation.bench_serving \
+  local log_file="$2"
+  local sim_output_dir="$3"
+  HISIM_OUTPUT_DIR="${sim_output_dir}" \
+    python3 -m hisim.simulation.bench_serving \
     --backend sglang \
     --port "${PORT}" \
     --dataset-name random \
     --random-input-len 30000 \
     --random-output-len 1024 \
     --random-range-ratio 1 \
-    --num-prompts 10 \
+    --num-prompts 100 \
     --request-rate "${rate}" \
     --bench-mode simulation \
     --warmup-requests 0 \
     --tokenize-prompt \
-    --output-file "${output_file}" \
+    --output-file /dev/null \
     2>&1 | tee "${log_file}"
 }
 
@@ -108,13 +113,15 @@ for size in "${hicache_sizes[@]}"; do
     for rate in "${request_rates[@]}"; do
       CURRENT_RUN=$(( CURRENT_RUN + 1 ))
       PREFIX="[${CURRENT_RUN}/${TOTAL_RUNS}] DramSize=${size}gB DramBw=${bw}gB rate=${rate}RPS"
-      LOG_PREFIX="${OUTPUT_DIR}/logs/DramSize${size}gB_DramBw${bw}gB_${rate}RPS"
-      mkdir -p "${OUTPUT_DIR}" "${OUTPUT_DIR}/logs"
+      RUN_NAME="DramSize${size}gB_DramBw${bw}gB_${rate}RPS"
+      LOG_PREFIX="${OUTPUT_DIR}/logs/${RUN_NAME}"
+      SIM_OUTPUT_DIR="${OUTPUT_DIR}/runs/${RUN_NAME}"
+      mkdir -p "${OUTPUT_DIR}" "${OUTPUT_DIR}/logs" "${SIM_OUTPUT_DIR}"
       echo "${PREFIX} — starting server..."
-      start_server "${size}" "${bw}" "${LOG_PREFIX}_server.log"
+      start_server "${size}" "${bw}" "${LOG_PREFIX}_server.log" "${SIM_OUTPUT_DIR}"
       echo "The server is fired up and ready to roll!"
       echo "${PREFIX} — testing..."
-      bench "${rate}" "${OUTPUT_DIR}/DramSize${size}gB_DramBw${bw}gB_${rate}RPS.json" "${LOG_PREFIX}_bench.log"
+      bench "${rate}" "${LOG_PREFIX}_bench.log" "${SIM_OUTPUT_DIR}"
       echo "${PREFIX} — shutting down..."
       stop_server
     done
