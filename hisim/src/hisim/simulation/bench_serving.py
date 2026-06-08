@@ -873,6 +873,7 @@ def get_dataset(args, tokenizer, model_id=None):
             tokenizer=tokenizer,
             num_requests=None,
             context_len=args.agentic_trace_context_len,
+            return_text=not tokenize_prompt,
         )
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
@@ -1727,6 +1728,7 @@ def sample_agentic_trace_requests(
     tokenizer: PreTrainedTokenizerBase,
     num_requests: Optional[int] = None,
     context_len: Optional[int] = None,
+    return_text: bool = True,
 ) -> List[DatasetRow]:
     """Unfold multi-turn agentic traces into one request per assistant turn.
 
@@ -1764,14 +1766,21 @@ def sample_agentic_trace_requests(
             role = "user" if turn["from"] == "human" else "assistant"
             if role == "assistant":
                 try:
-                    prompt = tokenizer.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=True
-                    )
+                    if return_text:
+                        prompt = tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True
+                        )
+                        input_ids = tokenizer.encode(prompt)
+                    else:
+                        input_ids = tokenizer.apply_chat_template(
+                            messages, tokenize=True, add_generation_prompt=True
+                        )
+                        prompt = None
                 except Exception:
                     prompt = "\n".join(
                         f"{m['role']}: {m['content']}" for m in messages
                     )
-                input_ids = tokenizer.encode(prompt)
+                    input_ids = tokenizer.encode(prompt)
                 output_ids = tokenizer.encode(turn["value"])
                 input_len = len(input_ids)
                 output_len = len(output_ids)
@@ -1784,7 +1793,7 @@ def sample_agentic_trace_requests(
                     continue
                 input_requests.append(
                     DatasetRow(
-                        prompt=prompt,
+                        prompt=prompt if return_text else input_ids,
                         prompt_len=input_len,
                         output_len=output_len,
                     )
