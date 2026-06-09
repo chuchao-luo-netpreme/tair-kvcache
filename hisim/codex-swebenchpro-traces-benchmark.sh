@@ -15,6 +15,7 @@ Starts a fresh server for each combination (HISIM_RESET_HICACHE_STORAGE=1).
 Options:
   --port PORT                   Server port (default: 12345).
   --rates RATES                 Comma-separated request rates (default: 1).
+  --num-prompts N               Maximum unfolded assistant turns to benchmark (default: 100).
   --hicache-size SIZES          Comma-separated L2 DRAM cache sizes in GB (default: 500).
   --hicache-rw-bandwidth BWS    Comma-separated DRAM read+write bandwidths in GB/s (default: 64).
   --output-dir DIR              Directory for results (default: ./codex_bench_metrics).
@@ -31,6 +32,7 @@ EOF
 
 PORT=12345
 RATES="1"
+NUM_PROMPTS="100"
 HICACHE_SIZES="500"
 HICACHE_BWS="64"
 OUTPUT_DIR="${SCRIPT_DIR}/codex_bench_metrics"
@@ -40,6 +42,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --port)                PORT="$2";         shift 2 ;;
     --rates)               RATES="$2";        shift 2 ;;
+    --num-prompts)         NUM_PROMPTS="$2";  shift 2 ;;
     --hicache-size)        HICACHE_SIZES="$2"; shift 2 ;;
     --hicache-rw-bandwidth) HICACHE_BWS="$2"; shift 2 ;;
     --output-dir)          OUTPUT_DIR="$2";   shift 2 ;;
@@ -93,6 +96,7 @@ bench() {
     --backend sglang \
     --port "${PORT}" \
     --dataset-name codex-swebenchpro-traces \
+    --num-prompts "${NUM_PROMPTS}" \
     --request-rate "${rate}" \
     --bench-mode simulation \
     --warmup-requests 0 \

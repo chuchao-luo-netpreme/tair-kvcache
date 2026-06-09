@@ -1049,6 +1049,7 @@ def _pass_str_to_block_ids(hash_key):
 
 class MockHiCacheStorage:
     def __init__(self, *args, **kwargs):
+        reset_storage = Envs.reset_hicache_storage()
         if kvcm_py_optimizer is not None:
             logger.info("Using KVCM HiCache storage")
             self.init_kvcm()
@@ -1058,19 +1059,18 @@ class MockHiCacheStorage:
             self.storage_file_path: str = "/tmp/hisim/hicache/storage_keys.txt"
             os.makedirs(os.path.dirname(self.storage_file_path), exist_ok=True)
 
-            if os.path.exists(self.storage_file_path):
+            if reset_storage:
+                logger.info(
+                    "Cleared KV cache saved in the storage backend because the system environment variable (`HISIM_RESET_HICACHE_STORAGE`) is set."
+                )
+                with open(self.storage_file_path, "w") as f:
+                    pass
+            elif os.path.exists(self.storage_file_path):
                 with open(self.storage_file_path) as f:
                     line = f.readline()
                     while line:
                         self.storage.add(line.strip())
                         line = f.readline()
-
-        if Envs.reset_hicache_storage():
-            logger.info(
-                "Cleared KV cache saved in the storage backend because the system environment variable (`HISIM_RESET_HICACHE_STORAGE`) is set."
-            )
-            with open(self.storage_file_path, "w") as f:
-                pass
 
     def init_kvcm(self):
         # Initialize kvcm based on reference examples
