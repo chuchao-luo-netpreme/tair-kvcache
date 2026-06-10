@@ -446,6 +446,19 @@ class C_HiRadixCacheHook(BaseHook):
     def hook(cls, target):
         original_check_hicache_events = target.check_hicache_events
         original_reset = target.reset
+        # https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/hiradix_cache.py#L1271
+        original_evict = target.evict
+
+        def wrapped_evict(self, params):
+            evictable_before = getattr(self, "evictable_size_", "N/A")
+            result = original_evict(self, params)
+            evictable_after = getattr(self, "evictable_size_", "N/A")
+            num_tokens = params if isinstance(params, int) else getattr(params, "num_tokens", params)
+            logger.info(
+                f"L1 eviction: requested={num_tokens} evictable_before={evictable_before} "
+                f"evictable_after={evictable_after} freed={evictable_before - evictable_after if isinstance(evictable_before, int) else 'N/A'}"
+            )
+            return result
 
         def wrapped_reset(self):
             if hasattr(self, "cache_controller"):
@@ -554,9 +567,24 @@ class C_HiRadixCacheHook(BaseHook):
             self.cache_controller.handle_prefetch_operation()
             return original_check_hicache_events(self, *args, **kwargs)
 
+        # https://github.com/sgl-project/sglang/blob/5c8bd8b51b53b9b39eb1edec582ee43b21002106/python/sglang/srt/mem_cache/hiradix_cache.py#L380
+        original_evict_host = target.evict_host
+        def wrapped_evict_host(self, num_tokens: int):
+            l2_before = self.token_to_kv_pool_host.available_size()
+            l2_total = self.token_to_kv_pool_host.size
+            original_evict_host(self, num_tokens)
+            l2_after = self.token_to_kv_pool_host.available_size()
+            logger.info(
+                f"L2 eviction: requested={num_tokens} freed={l2_after - l2_before} "
+                f"l2_available={l2_after}/{l2_total} "
+                f"({100 * (l2_total - l2_after) / l2_total:.1f}% used)"
+            )
+
         target.__init__ = override_init
         target.check_hicache_events = wrapped_check_hicache_events
         target.reset = wrapped_reset
+        target.evict = wrapped_evict
+        target.evict_host = wrapped_evict_host
 
 
 class C_StorageBackendFactory(BaseHook):
@@ -898,12 +926,19 @@ class C_SchedulerHook(BaseHook):
                         # Chunked request: nothing to do
                         pass
                 # Iteration statistics
+                l2_pool = getattr(
+                    getattr(self, "tree_cache", None), "token_to_kv_pool_host", None
+                )
+                l2_available = l2_pool.available_size() if l2_pool is not None else -1
+                l2_total = l2_pool.size if l2_pool is not None else -1
                 C_SchedulerHook.ITERATION_STATS.append(
                     {
                         "requests": C_SchedulerHook.HISIM_BATCH.request_info(),
                         "forward_latency": current_inference_dur,
                         "l2_load_latency": hicache_l2_load_dur,
                         "l2_backup_latency": hicache_l2_backup_dur,
+                        "l2_available_tokens": l2_available,
+                        "l2_total_tokens": l2_total,
                     }
                 )
             C_SchedulerHook.LAST_CPU_TS = time.time()
