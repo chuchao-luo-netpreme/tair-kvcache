@@ -153,14 +153,24 @@ class C_ModelRunnerHook(BaseHook):
                 device=self.device,
                 enable_memory_saver=False,
             )
+            # refer: https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/model_executor/model_runner.py#L1967-L1976
+            sim_tp_size = config.tp_size or 1
+            sim_dp_size = config.dp_size or 1
+            if getattr(self.server_args, "enable_dp_attention", False):
+                if sim_tp_size % sim_dp_size != 0:
+                    raise ValueError(
+                        f"Invalid simulated TP/DP sizes for DP attention: "
+                        f"tp_size={sim_tp_size}, dp_size={sim_dp_size}."
+                    )
+                sim_attention_tp_size = max(1, sim_tp_size // sim_dp_size)
+            else:
+                sim_attention_tp_size = sim_tp_size
 
             self.token_to_kv_pool = MockTokenToKVPool(
                 self.max_total_num_tokens,
                 page_size=self.page_size,
                 dtype=self.kv_cache_dtype,
-                head_num=self.model_config.get_num_kv_heads(
-                    1  # get_attention_tp_size()
-                ),
+                head_num=self.model_config.get_num_kv_heads(sim_attention_tp_size),
                 head_dim=self.model_config.head_dim,
                 layer_num=self.num_effective_layers,
                 device=self.device,
@@ -335,7 +345,7 @@ class C_HiCacheController(BaseHook):
                     )
                 )
                 if completed_tokens < storage_hit_count - operation.completed_tokens:
-                    operation.completed_tokens += completed_tokens
+                    operation.completed_tokens += int(completed_tokens)
                     remain_dur = 0
                 else:
                     operation.completed_tokens = int(storage_hit_count)
@@ -902,7 +912,7 @@ class C_SchedulerHook(BaseHook):
         def wrapped_profile(self, req, *args, **kwargs):
             stats: list[RequestStats] = []
             for item in C_SchedulerHook.REQUEST_STATS.values():
-                if item.rid is not None and item.input_length > 0:
+                if item.rid and item.input_length > 0:
                     stats.append(item)
 
             stats = sorted(stats, key=lambda req: req.created_time)
