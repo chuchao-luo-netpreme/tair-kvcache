@@ -16,6 +16,7 @@ Options:
   --port PORT                   Server port (default: 12345).
   --rates RATES                 Comma-separated request rates (default: 1).
   --num-prompts N               Maximum unfolded assistant turns to benchmark (default: 100).
+  --agentic-trace-context-len N  Drop turns where input+output exceeds N tokens (default: unset).
   --hicache-size SIZES          Comma-separated L2 DRAM cache sizes in GB (default: 500).
   --hicache-rw-bandwidth BWS    Comma-separated DRAM read+write bandwidths in GB/s (default: 64).
   --output-dir DIR              Directory for results (default: ./codex_bench_metrics).
@@ -33,6 +34,7 @@ EOF
 PORT=12345
 RATES="1"
 NUM_PROMPTS="100"
+AGENTIC_TRACE_CONTEXT_LEN=""
 HICACHE_SIZES="500"
 HICACHE_BWS="64"
 OUTPUT_DIR="${SCRIPT_DIR}/codex_bench_metrics"
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --port)                PORT="$2";         shift 2 ;;
     --rates)               RATES="$2";        shift 2 ;;
     --num-prompts)         NUM_PROMPTS="$2";  shift 2 ;;
+    --agentic-trace-context-len) AGENTIC_TRACE_CONTEXT_LEN="$2"; shift 2 ;;
     --hicache-size)        HICACHE_SIZES="$2"; shift 2 ;;
     --hicache-rw-bandwidth) HICACHE_BWS="$2"; shift 2 ;;
     --output-dir)          OUTPUT_DIR="$2";   shift 2 ;;
@@ -91,6 +94,12 @@ bench() {
   local rate="$1"
   local log_file="$2"
   local sim_output_dir="$3"
+  local agentic_trace_context_len_args=()
+  if [[ -n "${AGENTIC_TRACE_CONTEXT_LEN}" ]]; then
+    agentic_trace_context_len_args=(
+      --agentic-trace-context-len "${AGENTIC_TRACE_CONTEXT_LEN}"
+    )
+  fi
   HISIM_OUTPUT_DIR="${sim_output_dir}" \
   python3 -m hisim.simulation.bench_serving \
     --backend sglang \
@@ -101,6 +110,7 @@ bench() {
     --bench-mode simulation \
     --warmup-requests 0 \
     --tokenize-prompt \
+    "${agentic_trace_context_len_args[@]}" \
     --output-file /dev/null \
     2>&1 | tee "${log_file}"
 }
