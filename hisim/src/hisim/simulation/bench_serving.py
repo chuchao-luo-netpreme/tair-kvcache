@@ -1619,6 +1619,60 @@ def get_gen_prefix_cache_path(args, tokenizer):
     return cache_dir / cache_key
 
 
+def get_generated_shared_prefix_workload_id(dataset: List[DatasetRow]) -> str:
+    digest = hashlib.sha256()
+    for row in dataset:
+        digest.update(str(row.prompt_len).encode())
+        digest.update(b"\0")
+        digest.update(str(row.output_len).encode())
+        digest.update(b"\0")
+        if row.prompt is not None:
+            digest.update(row.prompt.encode("utf-8", errors="replace"))
+        else:
+            digest.update(repr(row.input_ids).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def get_agentic_trace_cache_path(
+    dataset_path: str,
+    tokenizer: PreTrainedTokenizerBase,
+    num_requests: Optional[int],
+    context_len: Optional[int],
+    return_text: bool,
+) -> Path:
+    cache_dir = Path.home() / ".cache" / "sglang" / "benchmark"
+    digest = hashlib.sha256()
+
+    if dataset_path and os.path.exists(dataset_path):
+        path = Path(dataset_path).resolve()
+        stat = path.stat()
+        source = {
+            "type": "local",
+            "path": str(path),
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+        }
+    else:
+        source = {
+            "type": "hf",
+            "name": "Inferact/codex_swebenchpro_traces",
+        }
+
+    cache_inputs = {
+        "source": source,
+        "tokenizer_class": tokenizer.__class__.__name__,
+        "tokenizer_name": getattr(tokenizer, "name_or_path", None),
+        "vocab_size": getattr(tokenizer, "vocab_size", None),
+        "chat_template": getattr(tokenizer, "chat_template", None),
+        "num_requests": num_requests,
+        "context_len": context_len,
+        "return_text": return_text,
+    }
+    digest.update(json.dumps(cache_inputs, sort_keys=True, default=str).encode())
+    return cache_dir / f"codex_swebenchpro_traces_{digest.hexdigest()[:16]}.pkl"
+
+
 def sample_generated_shared_prefix_requests(
     num_groups: int,
     prompts_per_group: int,
@@ -1636,7 +1690,12 @@ def sample_generated_shared_prefix_requests(
     if cache_path.exists() and range_ratio == 1:
         print(f"\nLoading cached generated input data from {cache_path}")
         with open(cache_path, "rb") as f:
-            return pickle.load(f)
+            input_requests = pickle.load(f)
+        print(
+            "Generated shared prefix workload id: "
+            f"{get_generated_shared_prefix_workload_id(input_requests)}"
+        )
+        return input_requests
 
     print(
         f"\nGenerating new input data... "
@@ -1745,6 +1804,22 @@ def sample_agentic_trace_requests(
     in cache from prior turns. See hisim/docs/agentic_trace_kvcache_hit_fix.md.
     """
     HF_DATASET_NAME = "Inferact/codex_swebenchpro_traces"
+    cache_path = get_agentic_trace_cache_path(
+        dataset_path=dataset_path,
+        tokenizer=tokenizer,
+        num_requests=num_requests,
+        context_len=context_len,
+        return_text=return_text,
+    )
+
+    if cache_path.exists():
+        print(f"Loading cached codex-swebenchpro-traces requests from {cache_path}")
+        with open(cache_path, "rb") as f:
+            input_requests = pickle.load(f)
+        print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
+        print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
+        print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+        return input_requests
 
     if dataset_path and os.path.exists(dataset_path):
         print(f"Loading codex-swebenchpro-traces from local file: {dataset_path}")
@@ -1808,9 +1883,21 @@ def sample_agentic_trace_requests(
             "Check that conversations have at least one assistant turn within context_len."
         )
 
+    if num_requests and len(input_requests) < num_requests:
+        print(
+            f"Warning: requested {num_requests} codex-swebenchpro-traces requests, "
+            f"but only {len(input_requests)} valid requests were available."
+        )
+
     print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
     print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
     print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Caching codex-swebenchpro-traces requests to {cache_path}")
+    with open(cache_path, "wb") as f:
+        pickle.dump(input_requests, f)
+
     return input_requests
 
 
