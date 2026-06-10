@@ -329,9 +329,7 @@ class MockTokenToKVPool:
         # default state for optional layer-wise transfer control
         self.layer_transfer_counter = None
 
-        # self.head_num = head_num
-        # self.head_dim = head_dim
-        # Overwrite
+        # NOTE: Overwrite with 1x1 to avoid allocating actual KV memory in simulation
         self.head_num = 1
         self.head_dim = 1
 
@@ -824,18 +822,41 @@ class MockTokenToKVPoolHost:
         ten_gb = 10 * (1024**3)
         available_bytes = host_mem.available - ten_gb
         if requested_bytes > available_bytes:
-            raise ValueError(
-                f"Not enough host memory available. Requesting "
-                f"{requested_bytes / 1e9:.2f} GB but only have "
-                f"{available_bytes / 1e9:.2f} GB free. Please reduce the "
-                f"size of the hierarchical cache."
-            )
+            if os.getenv("HISIM_SKIP_HOST_MEMORY_CHECK", "").lower() in (
+                "1",
+                "true",
+            ):
+                logger.warning(
+                    "Skipping host memory availability check because "
+                    "HISIM_SKIP_HOST_MEMORY_CHECK is set. Requesting "
+                    f"{requested_bytes / 1e9:.2f} GB but only have "
+                    f"{available_bytes / 1e9:.2f} GB free."
+                )
+            else:
+                raise ValueError(
+                    f"Not enough host memory available. Requesting "
+                    f"{requested_bytes / 1e9:.2f} GB but only have "
+                    f"{available_bytes / 1e9:.2f} GB free. Please reduce the "
+                    f"size of the hierarchical cache."
+                )
         else:
             logger.info(
                 f"Allocating {requested_bytes / 1e9:.2f} GB host memory for hierarchical KV cache."
             )
 
-        self.kv_buffer = self.init_kv_buffer()
+        self.fake_kv_buffer = os.getenv("HISIM_FAKE_HOST_KV_BUFFER", "").lower() in (
+            "1",
+            "true",
+        )
+        if self.fake_kv_buffer:
+            self.kv_buffer = None
+            logger.warning(
+                "Skipping host KV buffer allocation because "
+                "HISIM_FAKE_HOST_KV_BUFFER is set. The host pool will only "
+                "simulate capacity and transfer latency."
+            )
+        else:
+            self.kv_buffer = self.init_kv_buffer()
 
         # A lock for synchronized operations on memory allocation and state transitions.
         self.lock = threading.RLock()
@@ -973,6 +994,8 @@ class MockTokenToKVPoolHost:
         Get a dummy flat data page from the host memory pool.
         This is used for prefetching or initializing empty pages.
         """
+        if self.fake_kv_buffer:
+            return torch.zeros((1, 1), dtype=self.dtype, device=self.device).flatten()
         return torch.zeros(
             (2, self.layer_num, self.page_size, self.head_num, self.head_dim),
             dtype=self.dtype,
