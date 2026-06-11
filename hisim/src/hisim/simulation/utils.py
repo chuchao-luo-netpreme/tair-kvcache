@@ -5,23 +5,42 @@ from hisim.time_predictor.aiconfigurator import get_perf_model
 import numpy as np
 
 
-def calc_kv_cache_cell_elems(model_info: ModelInfo, tp_size: int, pp_size: int) -> int:
+def calc_attention_tp_size(tp_size: int) -> int:
+    # SGLang derives attention TP size in dp_attention.py and uses it when
+    # sizing KV cache pools:
+    # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/layers/dp_attention.py#L227-L235
+    # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/model_executor/model_runner.py#L1413-L1418
+    # DP attention is asserted off before this helper is used, so attention TP
+    # currently equals simulated TP.
+    tp_size = tp_size or 1
+    return tp_size
+
+
+def calc_kv_cache_cell_elems(
+    model_info: ModelInfo,
+    tp_size: int,
+    pp_size: int,
+) -> int:
     # Ref: https://github.com/sgl-project/sglang/blob/v0.4.8/python/sglang/srt/model_executor/model_runner.py#L832
     num_layers = model_info.num_hidden_layers // pp_size
     if model_info.kv_lora_rank != 0:
         return (model_info.kv_lora_rank + model_info.qk_rope_head_dim) * num_layers
     else:
-        num_kv_heads = max(model_info.num_key_value_heads // tp_size, 1)
+        attention_tp_size = calc_attention_tp_size(tp_size)
+        num_kv_heads = max(model_info.num_key_value_heads // attention_tp_size, 1)
         return num_kv_heads * model_info.head_dim * num_layers * 2
 
 
 def calc_kv_cache_per_layer_elems(
-    model_info: ModelInfo, tp_size: int, pp_size: int
+    model_info: ModelInfo,
+    tp_size: int,
+    pp_size: int,
 ) -> int:
     if model_info.kv_lora_rank != 0:
         return model_info.kv_lora_rank + model_info.qk_rope_head_dim
     else:
-        num_kv_heads = max(model_info.num_key_value_heads // tp_size, 1)
+        attention_tp_size = calc_attention_tp_size(tp_size)
+        num_kv_heads = max(model_info.num_key_value_heads // attention_tp_size, 1)
         return num_kv_heads * model_info.head_dim * 2
 
 
@@ -43,7 +62,9 @@ def estimate_kv_cache_pool_capacity(
     ) * (1 << 30) - weights
     kv_cache_space_per_token = (
         calc_kv_cache_cell_elems(
-            model, scheduler_config.tp_size, scheduler_config.pp_size
+            model,
+            scheduler_config.tp_size,
+            scheduler_config.pp_size,
         )
         * scheduler_config.kv_cache_data_type.bytes
     )

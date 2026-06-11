@@ -33,6 +33,7 @@ from hisim.simulation.sglang.sglang_mock_class import (
     MockHiCacheStorage,
 )
 from hisim.simulation.utils import (
+    calc_attention_tp_size,
     calc_metrics,
     estimate_kv_cache_pool_capacity,
 )
@@ -154,17 +155,7 @@ class C_ModelRunnerHook(BaseHook):
                 enable_memory_saver=False,
             )
             # refer: https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/model_executor/model_runner.py#L1967-L1976
-            sim_tp_size = config.tp_size or 1
-            sim_dp_size = config.dp_size or 1
-            if getattr(self.server_args, "enable_dp_attention", False):
-                if sim_tp_size % sim_dp_size != 0:
-                    raise ValueError(
-                        f"Invalid simulated TP/DP sizes for DP attention: "
-                        f"tp_size={sim_tp_size}, dp_size={sim_dp_size}."
-                    )
-                sim_attention_tp_size = max(1, sim_tp_size // sim_dp_size)
-            else:
-                sim_attention_tp_size = sim_tp_size
+            sim_attention_tp_size = calc_attention_tp_size(config.tp_size)
 
             self.token_to_kv_pool = MockTokenToKVPool(
                 self.max_total_num_tokens,
@@ -208,11 +199,6 @@ class C_ModelRunnerHook(BaseHook):
                     self.max_total_num_tokens // 2
                     if self.server_args.max_running_requests is None
                     else self.server_args.max_running_requests
-                    // (
-                        self.server_args.dp_size
-                        if self.server_args.enable_dp_attention
-                        else 1
-                    )
                 ),
                 self.req_to_token_pool.size,
             )

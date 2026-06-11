@@ -93,7 +93,9 @@ class ConfigManager:
         scheduler_config = cls._scheduler_config
         return (
             calc_kv_cache_cell_elems(
-                model, scheduler_config.tp_size, scheduler_config.pp_size
+                model,
+                scheduler_config.tp_size,
+                scheduler_config.pp_size,
             )
             * scheduler_config.data_type.bytes
         )
@@ -104,7 +106,9 @@ class ConfigManager:
         scheduler_config = cls._scheduler_config
         return (
             calc_kv_cache_per_layer_elems(
-                model, scheduler_config.tp_size, scheduler_config.pp_size
+                model,
+                scheduler_config.tp_size,
+                scheduler_config.pp_size,
             )
             * scheduler_config.data_type.bytes
         )
@@ -120,16 +124,14 @@ class ConfigManager:
         with open(Envs.config_path()) as f:
             config: dict = json.load(f)
         scheduler_config = config.get("scheduler", {})
+        assert not scheduler_config.get("enable_dp_attention", False), (
+            "HiSim scheduler.enable_dp_attention is not supported yet. "
+            "Remove scheduler.enable_dp_attention before running simulation."
+        )
 
-        tp_size = scheduler_config.get("tp_size")
-        if tp_size is None:
-            tp_size = internal_config.tp_size
-        ep_size = scheduler_config.get("ep_size")
-        if ep_size is None:
-            ep_size = internal_config.ep_size
-        dp_size = scheduler_config.get("dp_size")
-        if dp_size is None:
-            dp_size = internal_config.dp_size
+        tp_size = scheduler_config.get("tp_size", internal_config.tp_size)
+        dp_size = scheduler_config.get("dp_size", internal_config.dp_size)
+        ep_size = scheduler_config.get("ep_size", internal_config.ep_size)
         dtype = scheduler_config.get("data_type")
         if dtype is not None:
             dtype = DataType(dtype.upper())
@@ -162,6 +164,10 @@ class ConfigManager:
     @classmethod
     def _parse_server_args(cls, server_args: dict, backend: str) -> SchedulerConfig:
         if backend == "sglang":
+            assert not server_args.get("enable_dp_attention", False), (
+                "HiSim does not support SGLang DP attention yet. Disable "
+                "--enable-dp-attention before running simulation."
+            )
             return SchedulerConfig(
                 model=None,
                 tp_size=server_args.get("tp_size", 1),
