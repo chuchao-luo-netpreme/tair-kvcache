@@ -120,6 +120,9 @@ class SimulationArgs:
             f"--{prefix}tp-size", dest="sim_tp_size", type=int, default=None
         )
         parser.add_argument(
+            f"--{prefix}dp-size", dest="sim_dp_size", type=int, default=None
+        )
+        parser.add_argument(
             f"--{prefix}ep-size", dest="sim_ep_size", type=int, default=None
         )
         parser.add_argument(
@@ -172,6 +175,7 @@ class SimulationArgs:
             scheduler=SchedulerConfig(
                 tp_size=scheduler.get("tp_size", 1),
                 ep_size=scheduler.get("ep_size", 1),
+                dp_size=scheduler.get("dp_size", 1),
                 data_type=scheduler.get("data_type", "FP16"),
                 kv_cache_data_type=scheduler.get("kv_cache_data_type", "FP16"),
                 backend_name=scheduler.get("backend_name", "sglang"),
@@ -221,6 +225,7 @@ class SimulationArgs:
         # scheduler
         for arg, field in [
             ("sim_tp_size", "tp_size"),
+            ("sim_dp_size", "dp_size"),
             ("sim_ep_size", "ep_size"),
             ("sim_data_type", "data_type"),
             ("sim_kv_cache_data_type", "kv_cache_data_type"),
