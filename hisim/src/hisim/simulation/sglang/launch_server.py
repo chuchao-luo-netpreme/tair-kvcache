@@ -54,15 +54,18 @@ if __name__ == "__main__":
     server_args = ServerArgs.from_cli_args(raw_args)
     simulation_args = SimulationArgs.from_cli_args(raw_args)
 
-    config_path = os.getenv("HISIM_CONFIG_PATH")
-    if config_path and os.path.exists(config_path):
-        logger.info(f"Using config from {config_path}")
+    if simulation_args.cli_overrides_applied:
+        config_path = os.path.join(Envs.output_dir(), "config.json")
+        logger.info(f"Export config with CLI overrides to {config_path}")
+        with open(config_path, "w") as f:
+            json.dump(simulation_args.to_dict(), f)
+        os.environ["HISIM_CONFIG_PATH"] = config_path
     elif simulation_args.config_path:
+        logger.info(f"Using config from {simulation_args.config_path}")
         os.environ["HISIM_CONFIG_PATH"] = simulation_args.config_path
     else:
-        config_path = "/tmp/hisim/config.json"
+        config_path = os.path.join(Envs.output_dir(), "config.json")
         logger.info(f"Export config to {config_path}")
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, "w") as f:
             json.dump(simulation_args.to_dict(), f)
         os.environ["HISIM_CONFIG_PATH"] = config_path

@@ -23,7 +23,7 @@ class Envs:
                 f"The metrics output path, {HISIM_OUTPUT_DIR}, exists and is a file."
             )
             raise RuntimeError(f"{HISIM_OUTPUT_DIR} exists but is not a directory.")
-        os.makedirs(os.path.dirname(HISIM_OUTPUT_DIR), exist_ok=True)
+        os.makedirs(HISIM_OUTPUT_DIR, exist_ok=True)
         return HISIM_OUTPUT_DIR
 
     @classmethod
