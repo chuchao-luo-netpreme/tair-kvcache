@@ -433,8 +433,8 @@ class C_HiRadixCacheHook(BaseHook):
     def hook(cls, target):
         original_check_hicache_events = target.check_hicache_events
         original_reset = target.reset
-        # https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/hiradix_cache.py#L1271
         original_evict = target.evict
+        original_evict_host = target.evict_host
 
         # FIXME: this is hacky. only for ad-hoc research
         def get_eviction_reason_from_stack():
@@ -587,6 +587,7 @@ class C_HiRadixCacheHook(BaseHook):
                 f"evictable_after={evictable_after}"
             )
 
+        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/mem_cache/hiradix_cache.py#L321-L364
         def wrapped_evict(self, params):
             reason, callsite = get_eviction_reason_from_stack()
             hbm_pool = getattr(self, "token_to_kv_pool_allocator", None)
@@ -722,7 +723,6 @@ class C_HiRadixCacheHook(BaseHook):
             return original_check_hicache_events(self, *args, **kwargs)
 
         # https://github.com/sgl-project/sglang/blob/5c8bd8b51b53b9b39eb1edec582ee43b21002106/python/sglang/srt/mem_cache/hiradix_cache.py#L380
-        original_evict_host = target.evict_host
         def wrapped_evict_host(self, num_tokens: int):
             reason, callsite = get_eviction_reason_from_stack()
             l2_pool = getattr(self, "token_to_kv_pool_host", None)
