@@ -1,8 +1,11 @@
 import argparse
 import dataclasses
 import json
+import os
 from typing import Optional
+from hisim.utils import get_logger
 
+logger = get_logger("hisim")
 
 @dataclasses.dataclass
 class AcceleratorConfig:
@@ -43,6 +46,7 @@ class SchedulerConfig:
 @dataclasses.dataclass
 class SimulationArgs:
     config_path: Optional[str] = None
+    cli_overrides_applied: bool = False
 
     platform: PlatformConfig = dataclasses.field(default_factory=PlatformConfig)
     predictor: PredictorConfig = dataclasses.field(default_factory=PredictorConfig)
@@ -99,6 +103,9 @@ class SimulationArgs:
         )
         parser.add_argument(
             f"--{prefix}database-path", dest="sim_database_path", type=str, default=None
+        )
+        parser.add_argument(
+            f"--{prefix}database-mode", dest="sim_database_mode", type=str, default=None
         )
         parser.add_argument(
             f"--{prefix}device-name", dest="sim_device_name", type=str, default=None
@@ -168,6 +175,7 @@ class SimulationArgs:
             predictor=PredictorConfig(
                 name=predictor.get("name", "aiconfigurator"),
                 database_path=predictor.get("database_path"),
+                database_mode=predictor.get("database_mode", "SILICON"),
                 device_name=predictor.get("device_name"),
                 prefill_scale_factor=predictor.get("prefill_scale_factor", 1.0),
                 decode_scale_factor=predictor.get("decode_scale_factor", 1.0),
@@ -186,19 +194,27 @@ class SimulationArgs:
     def to_dict(self, indent=2, ensure_ascii: bool = False) -> dict:
         data = dataclasses.asdict(self)
         data.pop("config_path", None)
+        data.pop("cli_overrides_applied", None)
         return data
 
     @classmethod
     def from_cli_args(cls, ns: argparse.Namespace) -> "SimulationArgs":
-        # config_path
-        if getattr(ns, "sim_config_path", None) is not None:
-            return SimulationArgs.from_json(ns.sim_config_path)
+        config_path = getattr(ns, "sim_config_path", None)
+        if config_path is None:
+            env_config_path = os.getenv("HISIM_CONFIG_PATH")
+            if env_config_path and os.path.exists(env_config_path):
+                config_path = env_config_path
 
-        args = SimulationArgs()
+        if config_path is not None:
+            args = SimulationArgs.from_json(config_path)
+        else:
+            args = SimulationArgs()
+        has_override = False
 
         # platform
         if getattr(ns, "sim_accelerator_name", None) is not None:
             args.platform.accelerator.name = ns.sim_accelerator_name
+            has_override = True
         for arg, field in [
             ("sim_disk_read_bandwidth_gb", "disk_read_bandwidth_gb"),
             ("sim_disk_write_bandwidth_gb", "disk_write_bandwidth_gb"),
@@ -207,13 +223,17 @@ class SimulationArgs:
         ]:
             v = getattr(ns, arg, None)
             if v is not None:
+                logger.info(f"overriding {field}={v}")
                 setattr(args.platform, field, v)
+                has_override = True
 
         # predictor
         if getattr(ns, "sim_predictor_name", None) is not None:
             args.predictor.name = ns.sim_predictor_name
+            has_override = True
         for arg, field in [
             ("sim_database_path", "database_path"),
+            ("sim_database_mode", "database_mode"),
             ("sim_device_name", "device_name"),
             ("sim_prefill_scale_factor", "prefill_scale_factor"),
             ("sim_decode_scale_factor", "decode_scale_factor"),
@@ -221,6 +241,7 @@ class SimulationArgs:
             v = getattr(ns, arg, None)
             if v is not None:
                 setattr(args.predictor, field, v)
+                has_override = True
 
         # scheduler
         for arg, field in [
@@ -235,5 +256,10 @@ class SimulationArgs:
             v = getattr(ns, arg, None)
             if v is not None:
                 setattr(args.scheduler, field, v)
+                has_override = True
+
+        if has_override:
+            args.config_path = None
+            args.cli_overrides_applied = True
 
         return args
