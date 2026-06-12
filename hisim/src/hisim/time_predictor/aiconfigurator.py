@@ -537,7 +537,11 @@ class AIConfiguratorTimePredictor(InferTimePredictor):
             latency_dict = summary.get_context_latency_dict()
         infer_time = sum(latency_dict.values())
         if summary.check_oom():
-            logger.warning("Out of memory detected during estimation.")
+            logger.warning(
+                f"OOM detected: batch_size={batch.batch_size}, isl={isl}, "
+                f"prefix={prefix if not batch.is_decode() else 'N/A'}"
+            )
+            # FIXME: Negative latency doesn't make sense
             infer_time = -infer_time
         if batch.is_decode():
             infer_time *= self.decode_scale_factor

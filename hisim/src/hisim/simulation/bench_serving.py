@@ -13,6 +13,7 @@ python3 -m sglang.bench_serving --backend sglang --dataset-name random --num-pro
 
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import io
 import json
@@ -871,7 +872,7 @@ def get_dataset(args, tokenizer, model_id=None):
         input_requests = sample_agentic_trace_requests(
             args.dataset_path,
             tokenizer=tokenizer,
-            num_requests=None,
+            num_requests=args.num_prompts,
             context_len=args.agentic_trace_context_len,
             return_text=not tokenize_prompt,
         )
@@ -1611,9 +1612,11 @@ def get_gen_prefix_cache_path(args, tokenizer):
     cache_dir = Path.home() / ".cache" / "sglang" / "benchmark"
 
     # Create a unique cache filename based on the generation parameters
+    range_ratio = str(getattr(args, "gsp_range_ratio", 1.0)).replace(".", "p")
     cache_key = (
         f"gen_shared_prefix_{args.seed}_{args.gsp_num_groups}_{args.gsp_prompts_per_group}_"
         f"{args.gsp_system_prompt_len}_{args.gsp_question_len}_{args.gsp_output_len}_"
+        f"range_{range_ratio}_"
         f"{tokenizer.__class__.__name__}.pkl"
     )
     return cache_dir / cache_key
@@ -1686,8 +1689,9 @@ def sample_generated_shared_prefix_requests(
     """Generate benchmark requests with shared system prompts using random tokens and caching."""
     cache_path = get_gen_prefix_cache_path(args, tokenizer)
 
-    # Try to load from cache first
-    if cache_path.exists() and range_ratio == 1:
+    # Try to load from cache first. This keeps the generated workload and request
+    # order identical across benchmark runs with the same GSP parameters.
+    if cache_path.exists():
         print(f"\nLoading cached generated input data from {cache_path}")
         with open(cache_path, "rb") as f:
             input_requests = pickle.load(f)
@@ -1779,6 +1783,11 @@ def sample_generated_shared_prefix_requests(
     with open(cache_path, "wb") as f:
         pickle.dump(input_requests, f)
 
+    print(
+        "Generated shared prefix workload id: "
+        f"{get_generated_shared_prefix_workload_id(input_requests)}"
+    )
+
     return input_requests
 
 
@@ -1832,7 +1841,7 @@ def sample_agentic_trace_requests(
         raw_conversations = list(hf_ds["train"])
 
     input_requests: List[DatasetRow] = []
-    for conv_data in raw_conversations:
+    for conv_data in tqdm(raw_conversations, desc="Tokenizing codex traces"):
         if num_requests and len(input_requests) >= num_requests:
             break
         turns = conv_data.get("conversations", conv_data.get("conversation", []))

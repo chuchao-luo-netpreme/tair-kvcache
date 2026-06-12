@@ -7,7 +7,7 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Benchmark hisim simulation server using random requests (input=30000, output=1024, zrange=1).
+Benchmark hisim simulation server using random requests (input=20000, output=1024, zrange=1).
 Sweeps over all combinations of hicache-size × bandwidth × request-rate.
 Starts a fresh server for each combination (HISIM_RESET_HICACHE_STORAGE=1).
 
@@ -57,7 +57,7 @@ start_server() {
   local log_file="$3"
   local sim_output_dir="$4"
   HISIM_OUTPUT_DIR="${sim_output_dir}" \
-    setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
+  setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
     --port "${PORT}" \
     --hicache-size "${size}" \
     --read-bw "${bw}" \
@@ -86,11 +86,11 @@ bench() {
   local log_file="$2"
   local sim_output_dir="$3"
   HISIM_OUTPUT_DIR="${sim_output_dir}" \
-    python3 -m hisim.simulation.bench_serving \
+  python3 -m hisim.simulation.bench_serving \
     --backend sglang \
     --port "${PORT}" \
     --dataset-name random \
-    --random-input-len 30000 \
+    --random-input-len 20000 \
     --random-output-len 1024 \
     --random-range-ratio 1 \
     --num-prompts 100 \
