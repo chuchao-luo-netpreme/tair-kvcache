@@ -12,13 +12,14 @@
     "predictor": {
         "name": "aiconfigurator",
         "device_name": "h100_sxm",
+    	"database_mode":"HYBRID",
         "prefill_scale_factor": 1.0,
         "decode_scale_factor": 1.0
     },
     "scheduler": {
         "tp_size": 4,
-        "data_type": "FP4",
-        "kv_cache_data_type": "FP16",
+        "data_type": "BF16",
+        "kv_cache_data_type": "FP8",
         "backend_version": "0.5.6.post2"
     }
 }
