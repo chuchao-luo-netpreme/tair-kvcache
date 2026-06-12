@@ -807,6 +807,7 @@ class MockTokenToKVPoolHost:
         if host_size > 0:
             self.size = int(host_size * 1e9 // self.size_per_token)
         else:
+            logger.info(f"{device_pool.size=} {host_to_device_ratio=}")
             self.size = int(device_pool.size * host_to_device_ratio)
         # Align up the host memory pool size to the page size
         self.page_num = self.size // self.page_size + 1
@@ -870,6 +871,7 @@ class MockTokenToKVPoolHost:
         self.head_num = self.device_pool.original_head_num
         self.head_dim = self.device_pool.original_head_dim
         self.layer_num = self.device_pool.layer_num
+        logger.info(f"head_num={self.head_num}, head_dim={self.head_dim}, layer_num={self.layer_num}, dtype={self.dtype}")
 
         return self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2
 
@@ -923,11 +925,15 @@ class MockTokenToKVPoolHost:
         x = size_bytes_arr.astype(np.float64)
         if cat == "H2D":
             eff = 0.85
-            t0 = 6.67e-6
+            # Alibaba: t0 = 6.67e-6
+            # pcie 1us | nvlink 1.5us
+            t0 = 1e-6
             bw = MockTokenToKVPoolHost.MEMORY_READ_BANDWIDTH_BYTES * eff
         else:
             eff = 0.85
-            t0 = 4e-6
+            # Alibaba: t0 = 4e-6
+            # pcie 1us | nvlink 1.5us
+            t0 = 1e-6
             bw = MockTokenToKVPoolHost.MEMORY_WRITE_BANDWIDTH_BYTES * eff
         return x * bw / (t0 * bw + x)
 
@@ -954,9 +960,18 @@ class MockTokenToKVPoolHost:
             )
 
         size_bytes_arr = seg_len * float(MockTokenToKVPoolHost.KV_CACHE_BYTES_PER_LAYER)
+        total_bytes = float(np.sum(size_bytes_arr))
         bandwidth_arr = self.est_bandwidth_batch(size_bytes_arr, cat="H2D")
         total_time_cost = float(np.sum(size_bytes_arr / bandwidth_arr))
         # total_time_cost += 3.3e-6 * len(size_bytes_arr)  # CPU Overhead
+        logger.debug(
+            f"L2 read: load_to_device_per_layer layer_id={layer_id} "
+            f"io_backend={io_backend} num_indices={num_indices} "
+            f"num_segments={len(seg_len)} "
+            f"kv_cache_bytes_per_layer={MockTokenToKVPoolHost.KV_CACHE_BYTES_PER_LAYER} "
+            f"total_bytes={total_bytes:.0f} "
+            f"total_time_cost={total_time_cost:.6f}s"
+        )
         StateManager.inc_hicache_l2_load_dur(total_time_cost)
 
     def backup_from_device_all_layer(
@@ -980,10 +995,18 @@ class MockTokenToKVPoolHost:
             MockTokenToKVPoolHost.KV_CACHE_BYTES = ConfigManager.get_kv_cache_bytes()
 
         size_bytes_arr = seg_len * float(MockTokenToKVPoolHost.KV_CACHE_BYTES)
+        total_bytes = float(np.sum(size_bytes_arr))
         bandwidth_arr = self.est_bandwidth_batch(size_bytes_arr, cat="D2H")
         total_time_cost = float(np.sum(size_bytes_arr / bandwidth_arr))
         # total_time_cost += 3.3e-6 * len(size_bytes_arr)  # CPU Overhead
 
+        logger.debug(
+            f"L2 write: backup_from_device_all_layer io_backend={io_backend} "
+            f"num_indices={num_indices} num_segments={len(seg_len)} "
+            f"kv_cache_bytes={MockTokenToKVPoolHost.KV_CACHE_BYTES} "
+            f"total_bytes={total_bytes:.0f} "
+            f"total_time_cost={total_time_cost:.6f}s"
+        )
         StateManager.inc_hicache_l2_backup_dur(total_time_cost)
 
     def get_data_page(self, index, flat: bool = True) -> torch.Tensor:
