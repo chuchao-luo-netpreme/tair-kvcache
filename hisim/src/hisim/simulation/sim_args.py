@@ -27,6 +27,7 @@ class PlatformConfig:
 class PredictorConfig:
     name: str = "aiconfigurator"
     database_path: Optional[str] = None
+    database_mode: str = "SILICON"
     device_name: Optional[str] = None
     prefill_scale_factor: float = 1.0
     decode_scale_factor: float = 1.0
