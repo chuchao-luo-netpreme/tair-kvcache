@@ -52,6 +52,7 @@ from transformers import (
 )
 
 ASSISTANT_SUFFIX = "Assistant:"
+CODEX_TRACE_CACHE_VERSION = 3
 
 TERM_PLOTLIB_AVAILABLE = (importlib.util.find_spec("termplotlib") is not None) and (
     shutil.which("gnuplot") is not None
@@ -1663,6 +1664,7 @@ def get_agentic_trace_cache_path(
         }
 
     cache_inputs = {
+        "cache_version": CODEX_TRACE_CACHE_VERSION,
         "source": source,
         "tokenizer_class": tokenizer.__class__.__name__,
         "tokenizer_name": getattr(tokenizer, "name_or_path", None),
@@ -1841,14 +1843,25 @@ def sample_agentic_trace_requests(
         raw_conversations = list(hf_ds["train"])
 
     input_requests: List[DatasetRow] = []
-    for conv_data in tqdm(raw_conversations, desc="Tokenizing codex traces"):
+    for conv_idx, conv_data in enumerate(
+        tqdm(raw_conversations, desc="Tokenizing codex traces")
+    ):
         if num_requests and len(input_requests) >= num_requests:
             break
         turns = conv_data.get("conversations", conv_data.get("conversation", []))
         messages: List[dict] = []
+        assistant_turn_index = 0
         for turn in turns:
             role = "user" if turn["from"] == "human" else "assistant"
             if role == "assistant":
+                trace_turn_index = assistant_turn_index
+                trace_request_id = f"{conv_idx}:{trace_turn_index}"
+                trace_prev_request_id = (
+                    None
+                    if trace_turn_index == 0
+                    else f"{conv_idx}:{trace_turn_index - 1}"
+                )
+                assistant_turn_index += 1
                 try:
                     if return_text:
                         prompt = tokenizer.apply_chat_template(
@@ -1871,15 +1884,21 @@ def sample_agentic_trace_requests(
                 # Prune too short sequences (copied from sharegpt).
                 if input_len < 2 or output_len < 2:
                     messages.append({"role": role, "content": turn["value"]})
-                    continue
+                    break
                 if context_len and input_len + output_len > context_len:
                     messages.append({"role": role, "content": turn["value"]})
-                    continue
+                    break
                 input_requests.append(
                     DatasetRow(
                         prompt=prompt if return_text else input_ids,
                         prompt_len=input_len,
                         output_len=output_len,
+                        simulation={
+                            "trace_session_id": conv_idx,
+                            "trace_turn_index": trace_turn_index,
+                            "trace_request_id": trace_request_id,  # Current turn id.
+                            "trace_prev_request_id": trace_prev_request_id,  # Previous dense turn id.
+                        },
                     )
                 )
                 if num_requests and len(input_requests) >= num_requests:
