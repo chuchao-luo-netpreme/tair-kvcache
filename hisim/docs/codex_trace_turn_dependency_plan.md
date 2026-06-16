@@ -16,7 +16,7 @@
   - `trace_prev_request_id`: redundant predecessor id used for validation, or `None` for turn 0.
 - Stop unfolding a conversation after the first filtered assistant turn. This keeps trace ids dense: `0:0`'s child is `0:1`, `0:1`'s predecessor is `0:0`, and no scheduler-owned dependency map is needed.
 - Keep `get_request()` behavior of adding `created_time` and `total_request`; it must preserve the trace metadata already in `simulation`.
-- Bump the codex cache key version in `get_agentic_trace_cache_path` so old cached rows without dependency metadata are not reused.
+- Validate cached codex rows after load; remove stale cache files and regenerate when dependency metadata is missing or inconsistent.
 
 ## Scheduler Behavior
 
@@ -79,7 +79,7 @@
 - Unit test `sample_agentic_trace_requests`:
   - first assistant turn has no predecessor;
   - second assistant turn depends on the first;
-  - metadata survives cache load by forcing a fresh cache version.
+  - stale cache rows without dependency metadata are removed and regenerated.
 - Unit test `get_request` preserves trace metadata while adding `created_time` and `total_request`.
 - Add a small pure helper or class-method test for offline dependency release:
   - all requests are initially received;

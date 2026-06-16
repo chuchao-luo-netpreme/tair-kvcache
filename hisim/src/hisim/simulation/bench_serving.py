@@ -52,7 +52,6 @@ from transformers import (
 )
 
 ASSISTANT_SUFFIX = "Assistant:"
-CODEX_TRACE_CACHE_VERSION = 3
 
 TERM_PLOTLIB_AVAILABLE = (importlib.util.find_spec("termplotlib") is not None) and (
     shutil.which("gnuplot") is not None
@@ -1664,7 +1663,6 @@ def get_agentic_trace_cache_path(
         }
 
     cache_inputs = {
-        "cache_version": CODEX_TRACE_CACHE_VERSION,
         "source": source,
         "tokenizer_class": tokenizer.__class__.__name__,
         "tokenizer_name": getattr(tokenizer, "name_or_path", None),
@@ -1676,6 +1674,53 @@ def get_agentic_trace_cache_path(
     }
     digest.update(json.dumps(cache_inputs, sort_keys=True, default=str).encode())
     return cache_dir / f"codex_swebenchpro_traces_{digest.hexdigest()[:16]}.pkl"
+
+
+def _is_valid_agentic_trace_cache(input_requests: object) -> bool:
+    """Return whether cached codex trace rows match the current dependency schema."""
+    # pickle.load() can return stale or corrupt objects, so validate from object.
+    if not isinstance(input_requests, list) or len(input_requests) == 0:
+        return False
+
+    next_turn_by_session: dict[int, int] = {}
+    required_fields = {
+        "trace_session_id",
+        "trace_turn_index",
+        "trace_request_id",
+        "trace_prev_request_id",
+    }
+    for row in input_requests:
+        simulation = getattr(row, "simulation", None)
+        if not isinstance(simulation, dict) or not required_fields.issubset(
+            simulation
+        ):
+            return False
+
+        trace_session_id = simulation["trace_session_id"]
+        trace_turn_index = simulation["trace_turn_index"]
+        trace_request_id = simulation["trace_request_id"]
+        trace_prev_request_id = simulation["trace_prev_request_id"]
+        if not isinstance(trace_session_id, int) or not isinstance(
+            trace_turn_index, int
+        ):
+            return False
+
+        expected_turn_index = next_turn_by_session.get(trace_session_id, 0)
+        expected_trace_request_id = f"{trace_session_id}:{trace_turn_index}"
+        expected_trace_prev_request_id = (
+            None
+            if trace_turn_index == 0
+            else f"{trace_session_id}:{trace_turn_index - 1}"
+        )
+        if (
+            trace_turn_index != expected_turn_index
+            or trace_request_id != expected_trace_request_id
+            or trace_prev_request_id != expected_trace_prev_request_id
+        ):
+            return False
+        next_turn_by_session[trace_session_id] = trace_turn_index + 1
+
+    return True
 
 
 def sample_generated_shared_prefix_requests(
@@ -1825,12 +1870,33 @@ def sample_agentic_trace_requests(
 
     if cache_path.exists():
         print(f"Loading cached codex-swebenchpro-traces requests from {cache_path}")
-        with open(cache_path, "rb") as f:
-            input_requests = pickle.load(f)
-        print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
-        print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
-        print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
-        return input_requests
+        try:
+            with open(cache_path, "rb") as f:
+                input_requests = pickle.load(f)
+        except Exception as e:
+            print(
+                f"Failed to load cached codex-swebenchpro-traces requests: {e}. "
+                "Removing stale cache and regenerating."
+            )
+            cache_path.unlink(missing_ok=True)
+        else:
+            if _is_valid_agentic_trace_cache(input_requests):
+                print(
+                    f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}"
+                )
+                print(
+                    f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}"
+                )
+                print(
+                    f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}"
+                )
+                return input_requests
+
+            print(
+                "Cached codex-swebenchpro-traces requests do not match the "
+                "current dependency schema. Removing stale cache and regenerating."
+            )
+            cache_path.unlink(missing_ok=True)
 
     if dataset_path and os.path.exists(dataset_path):
         print(f"Loading codex-swebenchpro-traces from local file: {dataset_path}")

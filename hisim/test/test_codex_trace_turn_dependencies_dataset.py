@@ -1,10 +1,8 @@
 import argparse
 import asyncio
-import hashlib
 import json
 import pickle
 import re
-from pathlib import Path
 
 import pytest
 
@@ -71,38 +69,6 @@ def codex_trace_path(tmp_path):
     ]
     dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     return dataset_path
-
-
-
-def _old_agentic_trace_cache_path(
-    dataset_path: str,
-    tokenizer: FakeCodexTokenizer,
-    num_requests,
-    context_len,
-    return_text,
-):
-    cache_dir = Path.home() / ".cache" / "sglang" / "benchmark"
-    digest = hashlib.sha256()
-    path = Path(dataset_path).resolve()
-    stat = path.stat()
-    cache_inputs = {
-        "source": {
-            "type": "local",
-            "path": str(path),
-            "mtime_ns": stat.st_mtime_ns,
-            "size": stat.st_size,
-        },
-        "tokenizer_class": tokenizer.__class__.__name__,
-        "tokenizer_name": getattr(tokenizer, "name_or_path", None),
-        "vocab_size": getattr(tokenizer, "vocab_size", None),
-        "chat_template": getattr(tokenizer, "chat_template", None),
-        "num_requests": num_requests,
-        "context_len": context_len,
-        "return_text": return_text,
-    }
-    digest.update(json.dumps(cache_inputs, sort_keys=True, default=str).encode())
-    return cache_dir / f"codex_swebenchpro_traces_{digest.hexdigest()[:16]}.pkl"
-
 
 def test_sample_agentic_trace_requests_generates_dependency_metadata(
     isolated_home, codex_trace_path, fake_tokenizer
@@ -206,27 +172,19 @@ def test_get_request_preserves_trace_metadata(monkeypatch):
     assert rows[0].simulation["total_request"] == 1
 
 
-def test_agentic_trace_cache_key_invalidates_old_cache(
+def test_agentic_trace_stale_cache_is_removed_and_regenerated(
     isolated_home, codex_trace_path, fake_tokenizer
 ):
-    old_cache_path = _old_agentic_trace_cache_path(
+    cache_path = get_agentic_trace_cache_path(
         str(codex_trace_path),
         fake_tokenizer,
         num_requests=None,
         context_len=None,
         return_text=True,
     )
-    new_cache_path = get_agentic_trace_cache_path(
-        str(codex_trace_path),
-        fake_tokenizer,
-        num_requests=None,
-        context_len=None,
-        return_text=True,
-    )
-    assert old_cache_path != new_cache_path
 
-    old_cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(old_cache_path, "wb") as f:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "wb") as f:
         pickle.dump(
             [DatasetRow(prompt="stale prompt", prompt_len=2, output_len=2)],
             f,
@@ -236,5 +194,12 @@ def test_agentic_trace_cache_key_invalidates_old_cache(
         str(codex_trace_path), fake_tokenizer, return_text=True
     )
 
-    assert rows
+    assert len(rows) == 3
+    assert rows[0].prompt != "stale prompt"
     assert all("trace_request_id" in row.simulation for row in rows)
+    assert cache_path.exists()
+
+    with open(cache_path, "rb") as f:
+        cached_rows = pickle.load(f)
+    assert len(cached_rows) == 3
+    assert all("trace_request_id" in row.simulation for row in cached_rows)
