@@ -4,6 +4,7 @@ import sys
 import argparse
 import torch
 import hisim.hook as hisim_hook
+from hisim.simulation.manager.env import Envs
 from hisim.simulation.sglang import sgl_kernel_hook, sglang_hook
 from hisim.simulation.sim_args import SimulationArgs
 from hisim.utils import get_logger

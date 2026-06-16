@@ -12,3 +12,8 @@ dependencies = [
     "xgboost",
     "aiconfigurator @ git+https://github.com/ai-dynamo/aiconfigurator.git@h20e-higher-acc"
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+]

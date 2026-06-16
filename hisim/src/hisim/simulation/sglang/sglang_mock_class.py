@@ -329,6 +329,9 @@ class MockTokenToKVPool:
         # default state for optional layer-wise transfer control
         self.layer_transfer_counter = None
 
+        
+        self.original_head_num = head_num
+        self.original_head_dim = head_dim
         # NOTE: Overwrite with 1x1 to avoid allocating actual KV memory in simulation
         self.head_num = 1
         self.head_dim = 1
@@ -804,6 +807,7 @@ class MockTokenToKVPoolHost:
         if host_size > 0:
             self.size = int(host_size * 1e9 // self.size_per_token)
         else:
+            logger.info(f"{device_pool.size=} {host_to_device_ratio=}")
             self.size = int(device_pool.size * host_to_device_ratio)
         # Align up the host memory pool size to the page size
         self.page_num = self.size // self.page_size + 1
@@ -864,9 +868,10 @@ class MockTokenToKVPoolHost:
 
     def get_size_per_token(self):
         # MHA implementation
-        self.head_num = self.device_pool.head_num
-        self.head_dim = self.device_pool.head_dim
+        self.head_num = self.device_pool.original_head_num
+        self.head_dim = self.device_pool.original_head_dim
         self.layer_num = self.device_pool.layer_num
+        logger.info(f"head_num={self.head_num}, head_dim={self.head_dim}, layer_num={self.layer_num}, dtype={self.dtype}")
 
         return self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2
 
@@ -920,11 +925,15 @@ class MockTokenToKVPoolHost:
         x = size_bytes_arr.astype(np.float64)
         if cat == "H2D":
             eff = 0.85
-            t0 = 6.67e-6
+            # Alibaba: t0 = 6.67e-6
+            # pcie 1us | nvlink 1.5us
+            t0 = 1e-6
             bw = MockTokenToKVPoolHost.MEMORY_READ_BANDWIDTH_BYTES * eff
         else:
             eff = 0.85
-            t0 = 4e-6
+            # Alibaba: t0 = 4e-6
+            # pcie 1us | nvlink 1.5us
+            t0 = 1e-6
             bw = MockTokenToKVPoolHost.MEMORY_WRITE_BANDWIDTH_BYTES * eff
         return x * bw / (t0 * bw + x)
 
@@ -937,8 +946,8 @@ class MockTokenToKVPoolHost:
         assert len(host_indices) == len(device_indices)
         num_indices = len(host_indices)
 
-        host = np.asarray(host_indices, dtype=np.int64)
-        dev = np.asarray(device_indices, dtype=np.int64)
+        host = np.asarray(host_indices.cpu() if hasattr(host_indices, "cpu") else host_indices, dtype=np.int64)
+        dev = np.asarray(device_indices.cpu() if hasattr(device_indices, "cpu") else device_indices, dtype=np.int64)
         cont = (np.diff(host) == 1) & (np.diff(dev) == 1)
         cut = np.flatnonzero(~cont) + 1
         starts = np.r_[0, cut]
@@ -951,9 +960,18 @@ class MockTokenToKVPoolHost:
             )
 
         size_bytes_arr = seg_len * float(MockTokenToKVPoolHost.KV_CACHE_BYTES_PER_LAYER)
+        total_bytes = float(np.sum(size_bytes_arr))
         bandwidth_arr = self.est_bandwidth_batch(size_bytes_arr, cat="H2D")
         total_time_cost = float(np.sum(size_bytes_arr / bandwidth_arr))
         # total_time_cost += 3.3e-6 * len(size_bytes_arr)  # CPU Overhead
+        logger.debug(
+            f"L2 read: load_to_device_per_layer layer_id={layer_id} "
+            f"io_backend={io_backend} num_indices={num_indices} "
+            f"num_segments={len(seg_len)} "
+            f"kv_cache_bytes_per_layer={MockTokenToKVPoolHost.KV_CACHE_BYTES_PER_LAYER} "
+            f"total_bytes={total_bytes:.0f} "
+            f"total_time_cost={total_time_cost:.6f}s"
+        )
         StateManager.inc_hicache_l2_load_dur(total_time_cost)
 
     def backup_from_device_all_layer(
@@ -965,8 +983,8 @@ class MockTokenToKVPoolHost:
         # update global clock
         num_indices = len(host_indices)
 
-        host = np.asarray(host_indices, dtype=np.int64)
-        dev = np.asarray(device_indices, dtype=np.int64)
+        host = np.asarray(host_indices.cpu() if hasattr(host_indices, "cpu") else host_indices, dtype=np.int64)
+        dev = np.asarray(device_indices.cpu() if hasattr(device_indices, "cpu") else device_indices, dtype=np.int64)
         cont = (np.diff(host) == 1) & (np.diff(dev) == 1)
         cut = np.flatnonzero(~cont) + 1
         starts = np.r_[0, cut]
@@ -977,10 +995,18 @@ class MockTokenToKVPoolHost:
             MockTokenToKVPoolHost.KV_CACHE_BYTES = ConfigManager.get_kv_cache_bytes()
 
         size_bytes_arr = seg_len * float(MockTokenToKVPoolHost.KV_CACHE_BYTES)
+        total_bytes = float(np.sum(size_bytes_arr))
         bandwidth_arr = self.est_bandwidth_batch(size_bytes_arr, cat="D2H")
         total_time_cost = float(np.sum(size_bytes_arr / bandwidth_arr))
         # total_time_cost += 3.3e-6 * len(size_bytes_arr)  # CPU Overhead
 
+        logger.debug(
+            f"L2 write: backup_from_device_all_layer io_backend={io_backend} "
+            f"num_indices={num_indices} num_segments={len(seg_len)} "
+            f"kv_cache_bytes={MockTokenToKVPoolHost.KV_CACHE_BYTES} "
+            f"total_bytes={total_bytes:.0f} "
+            f"total_time_cost={total_time_cost:.6f}s"
+        )
         StateManager.inc_hicache_l2_backup_dur(total_time_cost)
 
     def get_data_page(self, index, flat: bool = True) -> torch.Tensor:
@@ -1046,6 +1072,7 @@ def _pass_str_to_block_ids(hash_key):
 
 class MockHiCacheStorage:
     def __init__(self, *args, **kwargs):
+        reset_storage = Envs.reset_hicache_storage()
         if kvcm_py_optimizer is not None:
             logger.info("Using KVCM HiCache storage")
             self.init_kvcm()
@@ -1055,19 +1082,18 @@ class MockHiCacheStorage:
             self.storage_file_path: str = "/tmp/hisim/hicache/storage_keys.txt"
             os.makedirs(os.path.dirname(self.storage_file_path), exist_ok=True)
 
-            if os.path.exists(self.storage_file_path):
+            if reset_storage:
+                logger.info(
+                    "Cleared KV cache saved in the storage backend because the system environment variable (`HISIM_RESET_HICACHE_STORAGE`) is set."
+                )
+                with open(self.storage_file_path, "w") as f:
+                    pass
+            elif os.path.exists(self.storage_file_path):
                 with open(self.storage_file_path) as f:
                     line = f.readline()
                     while line:
                         self.storage.add(line.strip())
                         line = f.readline()
-
-        if Envs.reset_hicache_storage():
-            logger.info(
-                "Cleared KV cache saved in the storage backend because the system environment variable (`HISIM_RESET_HICACHE_STORAGE`) is set."
-            )
-            with open(self.storage_file_path, "w") as f:
-                pass
 
     def init_kvcm(self):
         # Initialize kvcm based on reference examples

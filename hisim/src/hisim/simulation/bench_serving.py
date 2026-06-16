@@ -13,6 +13,7 @@ python3 -m sglang.bench_serving --backend sglang --dataset-name random --num-pro
 
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import io
 import json
@@ -867,6 +868,14 @@ def get_dataset(args, tokenizer, model_id=None):
         input_requests = sample_hisim_collection_requests(
             args.dataset_path, args.num_prompts, tokenizer=tokenizer
         )
+    elif args.dataset_name == "codex-swebenchpro-traces":
+        input_requests = sample_agentic_trace_requests(
+            args.dataset_path,
+            tokenizer=tokenizer,
+            num_requests=args.num_prompts,
+            context_len=args.agentic_trace_context_len,
+            return_text=not tokenize_prompt,
+        )
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
     return input_requests
@@ -1603,12 +1612,68 @@ def get_gen_prefix_cache_path(args, tokenizer):
     cache_dir = Path.home() / ".cache" / "sglang" / "benchmark"
 
     # Create a unique cache filename based on the generation parameters
+    range_ratio = str(getattr(args, "gsp_range_ratio", 1.0)).replace(".", "p")
     cache_key = (
         f"gen_shared_prefix_{args.seed}_{args.gsp_num_groups}_{args.gsp_prompts_per_group}_"
         f"{args.gsp_system_prompt_len}_{args.gsp_question_len}_{args.gsp_output_len}_"
+        f"range_{range_ratio}_"
         f"{tokenizer.__class__.__name__}.pkl"
     )
     return cache_dir / cache_key
+
+
+def get_generated_shared_prefix_workload_id(dataset: List[DatasetRow]) -> str:
+    digest = hashlib.sha256()
+    for row in dataset:
+        digest.update(str(row.prompt_len).encode())
+        digest.update(b"\0")
+        digest.update(str(row.output_len).encode())
+        digest.update(b"\0")
+        if row.prompt is not None:
+            digest.update(row.prompt.encode("utf-8", errors="replace"))
+        else:
+            digest.update(repr(row.input_ids).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def get_agentic_trace_cache_path(
+    dataset_path: str,
+    tokenizer: PreTrainedTokenizerBase,
+    num_requests: Optional[int],
+    context_len: Optional[int],
+    return_text: bool,
+) -> Path:
+    cache_dir = Path.home() / ".cache" / "sglang" / "benchmark"
+    digest = hashlib.sha256()
+
+    if dataset_path and os.path.exists(dataset_path):
+        path = Path(dataset_path).resolve()
+        stat = path.stat()
+        source = {
+            "type": "local",
+            "path": str(path),
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+        }
+    else:
+        source = {
+            "type": "hf",
+            "name": "Inferact/codex_swebenchpro_traces",
+        }
+
+    cache_inputs = {
+        "source": source,
+        "tokenizer_class": tokenizer.__class__.__name__,
+        "tokenizer_name": getattr(tokenizer, "name_or_path", None),
+        "vocab_size": getattr(tokenizer, "vocab_size", None),
+        "chat_template": getattr(tokenizer, "chat_template", None),
+        "num_requests": num_requests,
+        "context_len": context_len,
+        "return_text": return_text,
+    }
+    digest.update(json.dumps(cache_inputs, sort_keys=True, default=str).encode())
+    return cache_dir / f"codex_swebenchpro_traces_{digest.hexdigest()[:16]}.pkl"
 
 
 def sample_generated_shared_prefix_requests(
@@ -1624,11 +1689,17 @@ def sample_generated_shared_prefix_requests(
     """Generate benchmark requests with shared system prompts using random tokens and caching."""
     cache_path = get_gen_prefix_cache_path(args, tokenizer)
 
-    # Try to load from cache first
-    if cache_path.exists() and range_ratio == 1:
+    # Try to load from cache first. This keeps the generated workload and request
+    # order identical across benchmark runs with the same GSP parameters.
+    if cache_path.exists():
         print(f"\nLoading cached generated input data from {cache_path}")
         with open(cache_path, "rb") as f:
-            return pickle.load(f)
+            input_requests = pickle.load(f)
+        print(
+            "Generated shared prefix workload id: "
+            f"{get_generated_shared_prefix_workload_id(input_requests)}"
+        )
+        return input_requests
 
     print(
         f"\nGenerating new input data... "
@@ -1709,6 +1780,130 @@ def sample_generated_shared_prefix_requests(
     # Save to cache
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Caching generated input data to {cache_path}")
+    with open(cache_path, "wb") as f:
+        pickle.dump(input_requests, f)
+
+    print(
+        "Generated shared prefix workload id: "
+        f"{get_generated_shared_prefix_workload_id(input_requests)}"
+    )
+
+    return input_requests
+
+
+def sample_agentic_trace_requests(
+    dataset_path: str,
+    tokenizer: PreTrainedTokenizerBase,
+    num_requests: Optional[int] = None,
+    context_len: Optional[int] = None,
+    return_text: bool = True,
+) -> List[DatasetRow]:
+    """Unfold multi-turn agentic traces into one request per assistant turn.
+
+    Source: https://huggingface.co/datasets/Inferact/codex_swebenchpro_traces
+    Loads from local JSONL (--dataset-path) if provided, otherwise pulls from HuggingFace.
+
+    Each assistant turn becomes one request: input is the accumulated chat history
+    apply_chat_template'd up to (but not including) that turn; output_len is the
+    token count of the assistant response. "human" turns carry tool observations
+    (bash output, file contents, etc.) already flattened into plain text.
+
+    NOTE: hisim's mock sampler outputs token id=1 for all positions, so KV cache
+    hits only cover the human-turn prefix — not the assistant response tokens stored
+    in cache from prior turns. See hisim/docs/agentic_trace_kvcache_hit_fix.md.
+    """
+    HF_DATASET_NAME = "Inferact/codex_swebenchpro_traces"
+    cache_path = get_agentic_trace_cache_path(
+        dataset_path=dataset_path,
+        tokenizer=tokenizer,
+        num_requests=num_requests,
+        context_len=context_len,
+        return_text=return_text,
+    )
+
+    if cache_path.exists():
+        print(f"Loading cached codex-swebenchpro-traces requests from {cache_path}")
+        with open(cache_path, "rb") as f:
+            input_requests = pickle.load(f)
+        print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
+        print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
+        print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+        return input_requests
+
+    if dataset_path and os.path.exists(dataset_path):
+        print(f"Loading codex-swebenchpro-traces from local file: {dataset_path}")
+        with open(dataset_path, "r") as f:
+            raw_conversations = [json.loads(line) for line in f if line.strip()]
+    else:
+        print(f"Loading codex-swebenchpro-traces from HuggingFace: {HF_DATASET_NAME}")
+        from datasets import load_dataset as hf_load_dataset
+        hf_ds = hf_load_dataset(HF_DATASET_NAME)
+        raw_conversations = list(hf_ds["train"])
+
+    input_requests: List[DatasetRow] = []
+    for conv_data in tqdm(raw_conversations, desc="Tokenizing codex traces"):
+        if num_requests and len(input_requests) >= num_requests:
+            break
+        turns = conv_data.get("conversations", conv_data.get("conversation", []))
+        messages: List[dict] = []
+        for turn in turns:
+            role = "user" if turn["from"] == "human" else "assistant"
+            if role == "assistant":
+                try:
+                    if return_text:
+                        prompt = tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True
+                        )
+                        input_ids = tokenizer.encode(prompt)
+                    else:
+                        input_ids = tokenizer.apply_chat_template(
+                            messages, tokenize=True, add_generation_prompt=True
+                        )
+                        prompt = None
+                except Exception:
+                    prompt = "\n".join(
+                        f"{m['role']}: {m['content']}" for m in messages
+                    )
+                    input_ids = tokenizer.encode(prompt)
+                output_ids = tokenizer.encode(turn["value"])
+                input_len = len(input_ids)
+                output_len = len(output_ids)
+                # Prune too short sequences (copied from sharegpt).
+                if input_len < 2 or output_len < 2:
+                    messages.append({"role": role, "content": turn["value"]})
+                    continue
+                if context_len and input_len + output_len > context_len:
+                    messages.append({"role": role, "content": turn["value"]})
+                    continue
+                input_requests.append(
+                    DatasetRow(
+                        prompt=prompt if return_text else input_ids,
+                        prompt_len=input_len,
+                        output_len=output_len,
+                    )
+                )
+                if num_requests and len(input_requests) >= num_requests:
+                    break
+            messages.append({"role": role, "content": turn["value"]})
+
+    if not input_requests:
+        raise ValueError(
+            "No valid requests could be unfolded from the codex-swebenchpro-traces dataset. "
+            "Check that conversations have at least one assistant turn within context_len."
+        )
+
+    if num_requests and len(input_requests) < num_requests:
+        print(
+            f"Warning: requested {num_requests} codex-swebenchpro-traces requests, "
+            f"but only {len(input_requests)} valid requests were available."
+        )
+
+    print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
+    print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
+    print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Caching codex-swebenchpro-traces requests to {cache_path}")
     with open(cache_path, "wb") as f:
         pickle.dump(input_requests, f)
 
@@ -2758,6 +2953,7 @@ if __name__ == "__main__":
             "image",
             "mooncake",
             "hisim-collection",
+            "codex-swebenchpro-traces",
         ],
         help="Name of the dataset to benchmark on.",
     )
@@ -3079,6 +3275,15 @@ if __name__ == "__main__":
             "toolagent",
         ],
         help="Underlying workload for the mooncake dataset.",
+    )
+    agentic_group = parser.add_argument_group("codex-swebenchpro-traces dataset arguments")
+    agentic_group.add_argument(
+        "--agentic-trace-context-len",
+        type=int,
+        default=None,
+        help="The context length of the model for the codex-swebenchpro-traces dataset. "
+        "Turns where input+output exceeds this limit are dropped. "
+        "If not set, no filtering is applied.",
     )
     parser.add_argument(
         "--tag", type=str, default=None, help="The tag to be dumped to output."

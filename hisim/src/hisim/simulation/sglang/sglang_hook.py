@@ -1086,12 +1086,19 @@ class C_SchedulerHook(BaseHook):
                         # Chunked request: nothing to do
                         pass
                 # Iteration statistics
+                l2_pool = getattr(
+                    getattr(self, "tree_cache", None), "token_to_kv_pool_host", None
+                )
+                l2_available = l2_pool.available_size() if l2_pool is not None else -1
+                l2_total = l2_pool.size if l2_pool is not None else -1
                 C_SchedulerHook.ITERATION_STATS.append(
                     {
                         "requests": C_SchedulerHook.HISIM_BATCH.request_info(),
                         "forward_latency": current_inference_dur,
                         "l2_load_latency": hicache_l2_load_dur,
                         "l2_backup_latency": hicache_l2_backup_dur,
+                        "l2_available_tokens": l2_available,
+                        "l2_total_tokens": l2_total,
                     }
                 )
             C_SchedulerHook.LAST_CPU_TS = time.time()
