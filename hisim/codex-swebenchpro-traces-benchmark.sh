@@ -39,6 +39,7 @@ NUM_PROMPTS="100"
 AGENTIC_TRACE_CONTEXT_LEN=""
 HICACHE_SIZES="500"
 HICACHE_BWS="64"
+MAX_RUNNING_REQUESTS=""
 MAX_TOTAL_TOKENS=""
 PAGE_SIZE="64"
 OUTPUT_DIR="${SCRIPT_DIR}/codex_bench_metrics"
@@ -77,8 +78,8 @@ start_server() {
   fi
   HISIM_OUTPUT_DIR="${sim_output_dir}" \
   setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
-    --model-path "openai/gpt-oss-120b" \
-    --sim-config "test/assets/mock/config.gpt-oss-120b.h100.json" \
+    --model-path "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8" \
+    --sim-config "test/assets/mock/config.qwen3_235b.h100.json" \
     --port "${PORT}" \
     --hicache-size "${size}" \
     --page-size "${PAGE_SIZE}" \

@@ -1301,7 +1301,19 @@ class C_SchedulerHook(BaseHook):
                     return ret
 
                 hicache_l2_load_dur = StateManager.pop_hicache_l2_load_dur()
+                hicache_l2_load_segment_overhead_dur = (
+                    StateManager.pop_hicache_l2_load_segment_overhead_dur()
+                )
+                hicache_l2_load_bytes_bw_dur = (
+                    StateManager.pop_hicache_l2_load_bytes_bw_dur()
+                )
                 hicache_l2_backup_dur = StateManager.pop_hicache_l2_backup_dur()
+                hicache_l2_backup_segment_overhead_dur = (
+                    StateManager.pop_hicache_l2_backup_segment_overhead_dur()
+                )
+                hicache_l2_backup_bytes_bw_dur = (
+                    StateManager.pop_hicache_l2_backup_bytes_bw_dur()
+                )
                 current_inference_dur = StateManager.get_current_inference_dur()
 
                 if C_SchedulerHook.OVERLAP_SCHEDULE:
@@ -1357,7 +1369,17 @@ class C_SchedulerHook(BaseHook):
                         "requests": C_SchedulerHook.HISIM_BATCH.request_info(),
                         "forward_latency": current_inference_dur,
                         "l2_load_latency": hicache_l2_load_dur,
+                        "l2_load_segment_overhead_latency": (
+                            hicache_l2_load_segment_overhead_dur
+                        ),
+                        "l2_load_bytes_bw_latency": hicache_l2_load_bytes_bw_dur,
                         "l2_backup_latency": hicache_l2_backup_dur,
+                        "l2_backup_segment_overhead_latency": (
+                            hicache_l2_backup_segment_overhead_dur
+                        ),
+                        "l2_backup_bytes_bw_latency": (
+                            hicache_l2_backup_bytes_bw_dur
+                        ),
                         "l2_available_tokens": l2_available,
                         "l2_total_tokens": l2_total,
                     }

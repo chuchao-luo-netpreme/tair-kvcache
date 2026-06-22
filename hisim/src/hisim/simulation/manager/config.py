@@ -175,6 +175,7 @@ class ConfigManager:
                 dp_size=server_args.get("dp_size", 1),
                 max_prefill_tokens=server_args.get("max_prefill_tokens"),
                 chunked_prefill_size=server_args.get("chunked_prefill_size"),
+                max_running_requests=server_args.get("max_running_requests"),
                 mem_fraction_static=server_args.get("mem_fraction_static"),
                 page_size=server_args.get("page_size"),
                 backend_name="sglang",

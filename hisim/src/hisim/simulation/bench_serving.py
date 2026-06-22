@@ -565,7 +565,13 @@ async def async_request_sglang_generate(
                 "temperature": 0.0,
                 "max_new_tokens": request_func_input.output_len,
                 "ignore_eos": not args.disable_ignore_eos,
-                "custom_params": {"simulation": request_func_input.simulation},
+                "custom_params": {
+                    "simulation": (
+                        request_func_input.simulation.to_dict()
+                        if request_func_input.simulation is not None
+                        else None
+                    )
+                },
             },
             "stream": not args.disable_stream,
             "lora_path": request_func_input.lora_name,
@@ -935,6 +941,9 @@ class BenchmarkMetrics:
     max_output_tokens_per_s: float = 0.0
     max_concurrent_requests: int = 0
     mean_queue_ms: float = 0.0
+    mean_ttft_excluding_queue_ms: float = -1.0
+    median_ttft_excluding_queue_ms: float = -1.0
+    p99_ttft_excluding_queue_ms: float = -1.0
     prefix_cache_reused_ratio: float = 0.0
     disk_prefetch_ratio: float = 0.0
 
@@ -1010,13 +1019,29 @@ class DatasetRow:
     vision_prompt_len: Optional[int] = None
     image_data: Optional[List[str]] = None
     timestamp: Optional[float] = None
-    simulation: Optional[dict] = field(default_factory=dict)
+    simulation: SimulationParams = field(default_factory=SimulationParams)
 
     def __post_init__(self):
         if self.text_prompt_len is None:
             self.text_prompt_len = self.prompt_len
         if self.vision_prompt_len is None:
             self.vision_prompt_len = 0
+        self.ensure_simulation_params()
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self.__post_init__()
+
+    def ensure_simulation_params(self) -> SimulationParams:
+        """Return simulation metadata as a SimulationParams object."""
+        if self.simulation is None:
+            self.simulation = SimulationParams()
+        elif not isinstance(self.simulation, SimulationParams):
+            raise TypeError(
+                "DatasetRow.simulation must be SimulationParams or None; "
+                f"got {type(self.simulation).__name__}"
+            )
+        return self.simulation
 
 
 async def get_mooncake_request_over_time(
@@ -1684,23 +1709,24 @@ def _is_valid_agentic_trace_cache(input_requests: object) -> bool:
         return False
 
     next_turn_by_session: dict[int, int] = {}
-    required_fields = {
-        "trace_session_id",
-        "trace_turn_index",
-        "trace_request_id",
-        "trace_prev_request_id",
-    }
     for row in input_requests:
-        simulation = getattr(row, "simulation", None)
-        if not isinstance(simulation, dict) or not required_fields.issubset(
-            simulation
+        if not isinstance(row, DatasetRow):
+            return False
+        simulation = row.simulation
+        if not isinstance(simulation, SimulationParams):
+            return False
+
+        if (
+            simulation.trace_session_id is None
+            or simulation.trace_turn_index is None
+            or simulation.trace_request_id is None
         ):
             return False
 
-        trace_session_id = simulation["trace_session_id"]
-        trace_turn_index = simulation["trace_turn_index"]
-        trace_request_id = simulation["trace_request_id"]
-        trace_prev_request_id = simulation["trace_prev_request_id"]
+        trace_session_id = simulation.trace_session_id
+        trace_turn_index = simulation.trace_turn_index
+        trace_request_id = simulation.trace_request_id
+        trace_prev_request_id = simulation.trace_prev_request_id
         if not isinstance(trace_session_id, int) or not isinstance(
             trace_turn_index, int
         ):
@@ -1722,6 +1748,33 @@ def _is_valid_agentic_trace_cache(input_requests: object) -> bool:
         next_turn_by_session[trace_session_id] = trace_turn_index + 1
 
     return True
+
+
+def _format_agentic_trace_turn_distribution(
+    input_requests: list[DatasetRow],
+) -> str:
+    """Return a compact per-turn count summary for codex trace requests."""
+    turn_counts: dict[int, int] = {}
+    for row in input_requests:
+        trace_turn_index = row.simulation.trace_turn_index
+        if isinstance(trace_turn_index, int):
+            turn_number = trace_turn_index + 1
+            turn_counts[turn_number] = turn_counts.get(turn_number, 0) + 1
+
+    return ", ".join(
+        f"turn{turn_number}: {turn_counts[turn_number]}"
+        for turn_number in sorted(turn_counts)
+    )
+
+
+def _print_agentic_trace_request_summary(input_requests: list[DatasetRow]) -> None:
+    """Print the codex trace request summary for this benchmark run."""
+    print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
+    print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
+    print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+    turn_distribution = _format_agentic_trace_turn_distribution(input_requests)
+    if turn_distribution:
+        print(f"#Codex trace turn distribution: {turn_distribution}")
 
 
 def sample_generated_shared_prefix_requests(
@@ -2625,6 +2678,24 @@ async def benchmark(
     print("{:<40} {:<10.2f}".format("Median TTFT (ms):", metrics.median_ttft_ms))
     print("{:<40} {:<10.2f}".format("P99 TTFT (ms):", metrics.p99_ttft_ms))
     print(
+        "{:<40} {:<10.2f}".format(
+            "Mean TTFT excl. Queue (ms):",
+            metrics.mean_ttft_excluding_queue_ms,
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Median TTFT excl. Queue (ms):",
+            metrics.median_ttft_excluding_queue_ms,
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "P99 TTFT excl. Queue (ms):",
+            metrics.p99_ttft_excluding_queue_ms,
+        )
+    )
+    print(
         "{s:{c}^{n}}".format(s="Time per Output Token (excl. 1st token)", n=50, c="-")
     )
     print("{:<40} {:<10.2f}".format("Mean TPOT (ms):", metrics.mean_tpot_ms))
@@ -2680,6 +2751,11 @@ async def benchmark(
             "std_ttft_ms": metrics.std_ttft_ms,
             "p99_ttft_ms": metrics.p99_ttft_ms,
             "mean_queue_ms": metrics.mean_queue_ms,
+            "mean_ttft_excluding_queue_ms": metrics.mean_ttft_excluding_queue_ms,
+            "median_ttft_excluding_queue_ms": (
+                metrics.median_ttft_excluding_queue_ms
+            ),
+            "p99_ttft_excluding_queue_ms": metrics.p99_ttft_excluding_queue_ms,
             "mean_tpot_ms": metrics.mean_tpot_ms,
             "median_tpot_ms": metrics.median_tpot_ms,
             "std_tpot_ms": metrics.std_tpot_ms,

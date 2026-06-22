@@ -62,7 +62,7 @@ class SchedulerConfig:
     ep_size: int = 1
     dp_size: int = 1
     pp_size: int = 1
-    max_running_requests: int = (1 << 31) - 1
+    max_running_requests: Optional[int] = None
     page_size: Optional[int] = None
 
     # framework backend

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-LATENCY_STATS = ("mean", "median")
+LATENCY_STATS = ("mean", "median", "p99")
 
 DRAM_SIZE_RE = re.compile(r"DramSize(\d+)gB", re.IGNORECASE)
 DRAM_BW_RE = re.compile(r"DramBw(\d+)gB", re.IGNORECASE)
@@ -118,7 +118,7 @@ def load_rows(input_dir: Path, x_axis: str) -> list[Row]:
         }
 
         for stat in LATENCY_STATS:
-            for metric in ("ttft", "tpot", "itl"):
+            for metric in ("ttft", "ttft_excluding_queue", "tpot", "itl"):
                 key = f"{stat}_{metric}_ms"
                 if key in data:
                     row[key] = data[key]

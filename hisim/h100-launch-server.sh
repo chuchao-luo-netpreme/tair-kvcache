@@ -14,7 +14,7 @@ Options:
   --hicache-size SIZE   L2 DRAM KV cache size in GB (default: 500).
                         Must be larger than the HBM KV cache pool.
   --max-running-requests N
-                        Maximum number of concurrent running requests (default: 8).
+                        Maximum number of concurrent running requests (default: unset).
   --max-total-tokens N  Maximum HBM KV cache tokens (default: unset; estimate
                         from the sim config).
   --page-size N         KV cache page size in tokens (default: 64).
@@ -45,6 +45,8 @@ BW_ARGS=()
 [ -n "${WRITE_BW}" ] && BW_ARGS+=(--sim-memory-write-bandwidth-gb "${WRITE_BW}")
 MAX_TOTAL_TOKENS_ARGS=()
 [ -n "${MAX_TOTAL_TOKENS:-}" ] && MAX_TOTAL_TOKENS_ARGS+=(--max-total-tokens "${MAX_TOTAL_TOKENS}")
+MAX_RUNNING_REQUESTS_ARGS=()
+[ -n "${MAX_RUNNING_REQUESTS:-}" ] && MAX_RUNNING_REQUESTS_ARGS+=(--max-running-requests "${MAX_RUNNING_REQUESTS}")
 
 # to use CPU:
 #SGLANG_USE_CPU_ENGINE=1 \
@@ -60,7 +62,7 @@ python3 -m hisim.simulation.sglang.launch_server \
   --port "${PORT:-12345}" \
   --enable-hierarchical-cache \
   --hicache-size "${HICACHE_SIZE:-500}" \
-  --max-running-requests "${MAX_RUNNING_REQUESTS:-8}" \
+  "${MAX_RUNNING_REQUESTS_ARGS[@]}" \
   "${MAX_TOTAL_TOKENS_ARGS[@]}" \
   --page-size "${PAGE_SIZE:-64}" \
   "${BW_ARGS[@]}" \

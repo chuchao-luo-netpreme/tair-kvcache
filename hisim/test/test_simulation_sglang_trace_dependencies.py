@@ -2,8 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from hisim.simulation.sglang.sglang_hook import C_SchedulerHook
-from hisim.simulation.types import RequestStats
+from hisim.simulation.sglang.sglang_hook import (
+    C_SchedulerHook,
+    _simulation_params_from_http,
+)
+from hisim.simulation.types import RequestStats, SimulationParams
 
 
 NO_TRACE = object()
@@ -20,14 +23,18 @@ class FakeGenerateReq:
         trace_request_id=NO_TRACE,
         trace_prev_request_id=None,
         finished=False,
+        simulation_as_dict=False,
     ):
-        simulation = {
-            "created_time": created_time,
-            "total_request": total_request,
-        }
+        simulation = SimulationParams(
+            created_time=created_time,
+            total_request=total_request,
+        )
         if trace_request_id is not NO_TRACE:
-            simulation["trace_request_id"] = trace_request_id
-            simulation["trace_prev_request_id"] = trace_prev_request_id
+            simulation.trace_request_id = trace_request_id
+            simulation.trace_prev_request_id = trace_prev_request_id
+
+        if simulation_as_dict:
+            simulation = simulation.to_dict()
 
         self.rid = rid
         self.input_ids = [1, 2]
@@ -94,6 +101,36 @@ def test_offline_ingest_rejects_mismatched_total_request():
         C_SchedulerHook._ingest_offline_generate_requests([first, second])
 
 
+def test_offline_ingest_rejects_dict_simulation():
+    req = FakeGenerateReq(
+        "root",
+        created_time=0,
+        total_request=1,
+        trace_request_id="0:0",
+        trace_prev_request_id=None,
+        simulation_as_dict=True,
+    )
+
+    with pytest.raises(TypeError, match="custom_params\\['simulation'\\]"):
+        C_SchedulerHook._ingest_offline_generate_requests([req])
+
+
+def test_tokenizer_http_boundary_converts_dict_simulation():
+    simulation = _simulation_params_from_http(
+        SimulationParams(
+            created_time=1.5,
+            total_request=3,
+            trace_request_id="0:0",
+            trace_prev_request_id=None,
+        ).to_dict()
+    )
+
+    assert isinstance(simulation, SimulationParams)
+    assert simulation.created_time == 1.5
+    assert simulation.total_request == 3
+    assert simulation.trace_request_id == "0:0"
+
+
 def test_child_released_after_predecessor_completion():
     root = FakeGenerateReq(
         "root",
@@ -144,8 +181,8 @@ def test_child_ready_time_rewrites_created_time_and_queue_start():
     )
 
     child_sim = child.sampling_params.custom_params["simulation"]
-    assert child_sim["created_time"] == 5.0
-    assert child_sim["queue_start"] == 5.0
+    assert child_sim.created_time == 5.0
+    assert child_sim.queue_start == 5.0
     assert C_SchedulerHook.FUTURE_QUEUE[1][0] == 5.0
 
 
@@ -173,8 +210,8 @@ def test_child_ready_time_keeps_later_nominal_time():
     )
 
     child_sim = child.sampling_params.custom_params["simulation"]
-    assert child_sim["created_time"] == 10.0
-    assert child_sim["queue_start"] == 10.0
+    assert child_sim.created_time == 10.0
+    assert child_sim.queue_start == 10.0
 
 
 def test_two_turn_dependency_chain_drains_completion_state():
