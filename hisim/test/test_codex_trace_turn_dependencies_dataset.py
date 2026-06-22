@@ -13,6 +13,7 @@ from hisim.simulation.bench_serving import (
     get_request,
     sample_agentic_trace_requests,
 )
+from hisim.simulation.types import SimulationParams
 
 
 class FakeCodexTokenizer:
@@ -70,32 +71,42 @@ def codex_trace_path(tmp_path):
     dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     return dataset_path
 
+
 def test_sample_agentic_trace_requests_generates_dependency_metadata(
-    isolated_home, codex_trace_path, fake_tokenizer
+    isolated_home, codex_trace_path, fake_tokenizer, capsys
 ):
     rows = sample_agentic_trace_requests(
         str(codex_trace_path), fake_tokenizer, return_text=True
     )
+    output = capsys.readouterr().out
 
     assert len(rows) == 3
-    assert rows[0].simulation == {
-        "trace_session_id": 0,
-        "trace_turn_index": 0,
-        "trace_request_id": "0:0",
-        "trace_prev_request_id": None,
-    }
-    assert rows[1].simulation == {
-        "trace_session_id": 0,
-        "trace_turn_index": 1,
-        "trace_request_id": "0:1",
-        "trace_prev_request_id": "0:0",
-    }
-    assert rows[2].simulation == {
-        "trace_session_id": 1,
-        "trace_turn_index": 0,
-        "trace_request_id": "1:0",
-        "trace_prev_request_id": None,
-    }
+    assert "#Codex trace turn distribution: turn1: 2, turn2: 1" in output
+    assert rows[0].simulation == SimulationParams(
+        trace_session_id=0,
+        trace_turn_index=0,
+        trace_request_id="0:0",
+        trace_prev_request_id=None,
+    )
+    assert rows[1].simulation == SimulationParams(
+        trace_session_id=0,
+        trace_turn_index=1,
+        trace_request_id="0:1",
+        trace_prev_request_id="0:0",
+    )
+    assert rows[2].simulation == SimulationParams(
+        trace_session_id=1,
+        trace_turn_index=0,
+        trace_request_id="1:0",
+        trace_prev_request_id=None,
+    )
+
+    cached_rows = sample_agentic_trace_requests(
+        str(codex_trace_path), fake_tokenizer, return_text=True
+    )
+    cached_output = capsys.readouterr().out
+    assert cached_rows == rows
+    assert "#Codex trace turn distribution: turn1: 2, turn2: 1" in cached_output
 
 
 def test_sample_agentic_trace_requests_stops_conversation_after_filtered_turn(
@@ -122,7 +133,7 @@ def test_sample_agentic_trace_requests_stops_conversation_after_filtered_turn(
         str(dataset_path), fake_tokenizer, context_len=8, return_text=True
     )
 
-    assert [row.simulation["trace_request_id"] for row in rows] == ["0:0"]
+    assert [row.simulation.trace_request_id for row in rows] == ["0:0"]
     assert rows[0].prompt_len == 2
     assert rows[0].output_len == 2
     capped_prompt = fake_tokenizer.apply_chat_template(
@@ -140,19 +151,24 @@ def test_sample_agentic_trace_requests_stops_conversation_after_filtered_turn(
     assert capped_turn_len == 12
     assert capped_turn_len > 8
     assert all(row.prompt_len + row.output_len <= 8 for row in rows)
-    assert rows[0].simulation["trace_prev_request_id"] is None
+    assert rows[0].simulation.trace_prev_request_id is None
 
 
 def test_get_request_preserves_trace_metadata(monkeypatch):
     bench_serving.args = argparse.Namespace(bench_mode="simulation")
-    simulation = {
-        "trace_session_id": 0,
-        "trace_turn_index": 0,
-        "trace_request_id": "0:0",
-        "trace_prev_request_id": None,
-    }
+    simulation = SimulationParams(
+        trace_session_id=0,
+        trace_turn_index=0,
+        trace_request_id="0:0",
+        trace_prev_request_id=None,
+    )
     rows = [
-        DatasetRow(prompt="hello world", prompt_len=2, output_len=2, simulation=simulation)
+        DatasetRow(
+            prompt="hello world",
+            prompt_len=2,
+            output_len=2,
+            simulation=simulation,
+        )
     ]
     original_id = id(rows[0].simulation)
 
@@ -166,10 +182,10 @@ def test_get_request_preserves_trace_metadata(monkeypatch):
 
     assert seen_rows == rows
     assert id(rows[0].simulation) == original_id
-    assert rows[0].simulation["trace_request_id"] == "0:0"
-    assert rows[0].simulation["trace_prev_request_id"] is None
-    assert rows[0].simulation["created_time"] == 0
-    assert rows[0].simulation["total_request"] == 1
+    assert rows[0].simulation.trace_request_id == "0:0"
+    assert rows[0].simulation.trace_prev_request_id is None
+    assert rows[0].simulation.created_time == 0
+    assert rows[0].simulation.total_request == 1
 
 
 def test_agentic_trace_stale_cache_is_removed_and_regenerated(
@@ -196,10 +212,10 @@ def test_agentic_trace_stale_cache_is_removed_and_regenerated(
 
     assert len(rows) == 3
     assert rows[0].prompt != "stale prompt"
-    assert all("trace_request_id" in row.simulation for row in rows)
+    assert all(row.simulation.trace_request_id is not None for row in rows)
     assert cache_path.exists()
 
     with open(cache_path, "rb") as f:
         cached_rows = pickle.load(f)
     assert len(cached_rows) == 3
-    assert all("trace_request_id" in row.simulation for row in cached_rows)
+    assert all(row.simulation.trace_request_id is not None for row in cached_rows)

@@ -1,7 +1,35 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
-from typing import Optional, Union
+from typing import Any, Optional, Union
 from hisim.spec import ModelInfo, DataType, AcceleratorInfo
+
+
+@dataclass
+class SimulationParams:
+    created_time: float = 0
+    total_request: int = 0
+    queue_start: Optional[float] = None
+    server_created_time: Optional[float] = None
+    trace_session_id: Optional[int] = None
+    trace_turn_index: Optional[int] = None
+    trace_request_id: Optional[str] = None
+    trace_prev_request_id: Optional[str] = None
+    original_created_time: Optional[float] = None
+    dependency_ready_time: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> "SimulationParams":
+        """Deserialize simulation metadata from an HTTP JSON payload."""
+        if not isinstance(values, dict):
+            raise TypeError(
+                "SimulationParams.from_dict expects dict, "
+                f"got {type(values).__name__}"
+            )
+        names = {dataclass_field.name for dataclass_field in fields(cls)}
+        return cls(**{key: value for key, value in values.items() if key in names})
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass

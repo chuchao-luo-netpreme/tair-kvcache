@@ -12,7 +12,7 @@ import hisim.hook as hisim_hook
 from hisim.simulation.sglang import sgl_kernel_hook
 from hisim.simulation.sglang import sglang_hook
 from hisim.simulation.base.runner import BaseBenchmarkRunner
-from hisim.simulation.types import BenchmarkConfig
+from hisim.simulation.types import BenchmarkConfig, SimulationParams
 from hisim.dataset import (
     DatasetArgs,
     get_dataset,
@@ -84,7 +84,7 @@ class SGLangBenchmarkRunner(BaseBenchmarkRunner):
         ignore_timestamp: bool = False,
         with_queue_start: bool = False,
         request_rate: float = float("inf"),
-    ) -> Iterator[tuple[GenericRequest, dict]]:
+    ) -> Iterator[tuple[GenericRequest, SimulationParams]]:
         yield_delay = 0
         for req in dataset:
             if ignore_timestamp:
@@ -93,12 +93,12 @@ class SGLangBenchmarkRunner(BaseBenchmarkRunner):
             else:
                 created_time = req.custom_params.get("created_time", 0)
 
-            simulation_params = {
-                "total_request": len(dataset),  # include the warmup requests.
-                "created_time": created_time,
-            }
+            simulation_params = SimulationParams(
+                total_request=len(dataset),  # include the warmup requests.
+                created_time=created_time,
+            )
             if with_queue_start:
-                simulation_params["queue_start"] = req.custom_params.get("queue_start")
+                simulation_params.queue_start = req.custom_params.get("queue_start")
 
             yield (req, simulation_params)
 

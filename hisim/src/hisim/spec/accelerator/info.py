@@ -44,6 +44,28 @@ class NVIDIA:
         save_to_registry=True,
     )
 
+    NVIDIA_B200 = AcceleratorInfo.from_dict(
+        config={
+            "name": "NVIDIA B200",
+            "device_alias": ["B200", "b200_sxm"],
+            "tflops": {
+                "FP4_TENSOR": 9000,
+                "FP8_TENSOR": 4500,
+                "INT8_TENSOR": 4500,
+                "FP16_TENSOR": 2250,
+                "BF16_TENSOR": 2250,
+                "FP32": 90,
+            },
+            "hbm_capacity_gb": 180,
+            "hbm_bandwidth_gb": 8000,
+            "inter_node_bandwidth_gb": 50,
+            "intra_node_bandwidth_gb": 900,
+            "vendor": "NVIDIA",
+            "ref": "https://www.nvidia.com/en-us/data-center/b200/",
+        },
+        save_to_registry=True,
+    )
+
     NVIDIA_H20 = AcceleratorInfo.from_dict(
         config={
             "name": "NVIDIA H20",

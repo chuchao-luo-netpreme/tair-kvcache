@@ -913,7 +913,7 @@ class MockTokenToKVPoolHost:
             )
         return buffer
 
-    def est_bandwidth_batch(self, size_bytes_arr: np.ndarray, cat: str):
+    def _transfer_params(self, cat: str) -> tuple[float, float]:
         if MockTokenToKVPoolHost.MEMORY_READ_BANDWIDTH_BYTES is None:
             MockTokenToKVPoolHost.MEMORY_READ_BANDWIDTH_BYTES = (
                 ConfigManager.get_platform_config().memory_read_bandwidth
@@ -922,7 +922,6 @@ class MockTokenToKVPoolHost:
             MockTokenToKVPoolHost.MEMORY_WRITE_BANDWIDTH_BYTES = (
                 ConfigManager.get_platform_config().memory_write_bandwidth
             )
-        x = size_bytes_arr.astype(np.float64)
         if cat == "H2D":
             eff = 0.85
             # Alibaba: t0 = 6.67e-6
@@ -935,7 +934,22 @@ class MockTokenToKVPoolHost:
             # pcie 1us | nvlink 1.5us
             t0 = 1e-6
             bw = MockTokenToKVPoolHost.MEMORY_WRITE_BANDWIDTH_BYTES * eff
+        return t0, bw
+
+    def est_bandwidth_batch(self, size_bytes_arr: np.ndarray, cat: str):
+        t0, bw = self._transfer_params(cat)
+        x = size_bytes_arr.astype(np.float64)
         return x * bw / (t0 * bw + x)
+
+    def est_transfer_latency_breakdown_batch(
+        self, size_bytes_arr: np.ndarray, cat: str
+    ) -> tuple[float, float]:
+        """Return transfer breakdown without driving simulated latency."""
+        t0, bw = self._transfer_params(cat)
+        x = size_bytes_arr.astype(np.float64)
+        segment_overhead_latency = float(t0 * len(x))
+        bytes_bw_latency = float(np.sum(x / bw))
+        return segment_overhead_latency, bytes_bw_latency
 
     def load_to_device_per_layer(
         self, device_pool, host_indices, device_indices, layer_id, io_backend
@@ -943,6 +957,7 @@ class MockTokenToKVPoolHost:
         # update global clock
         # Merge cache indices
         # https://github.com/sgl-project/sglang/blob/v0.5.8/sgl-kernel/csrc/kvcacheio/transfer.cu#L713
+        # NOTE: this model only simulate DMA backend. It doesn't model kernel
         assert len(host_indices) == len(device_indices)
         num_indices = len(host_indices)
 
@@ -963,6 +978,9 @@ class MockTokenToKVPoolHost:
         total_bytes = float(np.sum(size_bytes_arr))
         bandwidth_arr = self.est_bandwidth_batch(size_bytes_arr, cat="H2D")
         total_time_cost = float(np.sum(size_bytes_arr / bandwidth_arr))
+        segment_overhead_time, bytes_bw_time = self.est_transfer_latency_breakdown_batch(
+            size_bytes_arr, cat="H2D"
+        )
         # total_time_cost += 3.3e-6 * len(size_bytes_arr)  # CPU Overhead
         logger.debug(
             f"L2 read: load_to_device_per_layer layer_id={layer_id} "
@@ -970,9 +988,15 @@ class MockTokenToKVPoolHost:
             f"num_segments={len(seg_len)} "
             f"kv_cache_bytes_per_layer={MockTokenToKVPoolHost.KV_CACHE_BYTES_PER_LAYER} "
             f"total_bytes={total_bytes:.0f} "
+            f"segment_overhead_time={segment_overhead_time:.6f}s "
+            f"bytes_bw_time={bytes_bw_time:.6f}s "
             f"total_time_cost={total_time_cost:.6f}s"
         )
         StateManager.inc_hicache_l2_load_dur(total_time_cost)
+        StateManager.inc_hicache_l2_load_segment_overhead_dur(
+            segment_overhead_time
+        )
+        StateManager.inc_hicache_l2_load_bytes_bw_dur(bytes_bw_time)
 
     def backup_from_device_all_layer(
         self, device_pool, host_indices, device_indices, io_backend
@@ -998,6 +1022,9 @@ class MockTokenToKVPoolHost:
         total_bytes = float(np.sum(size_bytes_arr))
         bandwidth_arr = self.est_bandwidth_batch(size_bytes_arr, cat="D2H")
         total_time_cost = float(np.sum(size_bytes_arr / bandwidth_arr))
+        segment_overhead_time, bytes_bw_time = self.est_transfer_latency_breakdown_batch(
+            size_bytes_arr, cat="D2H"
+        )
         # total_time_cost += 3.3e-6 * len(size_bytes_arr)  # CPU Overhead
 
         logger.debug(
@@ -1005,9 +1032,15 @@ class MockTokenToKVPoolHost:
             f"num_indices={num_indices} num_segments={len(seg_len)} "
             f"kv_cache_bytes={MockTokenToKVPoolHost.KV_CACHE_BYTES} "
             f"total_bytes={total_bytes:.0f} "
+            f"segment_overhead_time={segment_overhead_time:.6f}s "
+            f"bytes_bw_time={bytes_bw_time:.6f}s "
             f"total_time_cost={total_time_cost:.6f}s"
         )
         StateManager.inc_hicache_l2_backup_dur(total_time_cost)
+        StateManager.inc_hicache_l2_backup_segment_overhead_dur(
+            segment_overhead_time
+        )
+        StateManager.inc_hicache_l2_backup_bytes_bw_dur(bytes_bw_time)
 
     def get_data_page(self, index, flat: bool = True) -> torch.Tensor:
         """

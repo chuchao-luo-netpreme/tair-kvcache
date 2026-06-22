@@ -17,6 +17,7 @@ from hisim.hook import BaseHook
 from hisim.simulation.types import (
     MockSimulationMode,
     RequestStats,
+    SimulationParams,
 )
 from hisim.hook.utils import get_obj_from_args
 from hisim.utils.json import CustomJsonEncoder
@@ -52,6 +53,20 @@ else:
     ScheduleReq = Any
 
 
+def _simulation_params_from_http(value: object) -> SimulationParams | None:
+    """Deserialize simulation metadata carried by HTTP custom_params."""
+    if value is None:
+        return None
+    if isinstance(value, SimulationParams):
+        return value
+    if not isinstance(value, dict):
+        raise TypeError(
+            "sampling_params.custom_params['simulation'] must be "
+            f"dict, SimulationParams, or None; got {type(value).__name__}"
+        )
+    return SimulationParams.from_dict(value)
+
+
 class C_EngineHook(BaseHook):
     HOOK_CLASS_NAME = "Engine"
     HOOK_MODULE_NAME = "sglang.srt.entrypoints.engine"
@@ -81,9 +96,13 @@ class C_TokenizerManagerHook(BaseHook):
                     tokenized_obj.sampling_params.custom_params is not None
                     and "simulation" in tokenized_obj.sampling_params.custom_params
                 ):
-                    tokenized_obj.sampling_params.custom_params["simulation"][
-                        "server_created_time"
-                    ] = created_time
+                    custom_params = tokenized_obj.sampling_params.custom_params
+                    simulation_params = _simulation_params_from_http(
+                        custom_params["simulation"]
+                    )
+                    if simulation_params is not None:
+                        custom_params["simulation"] = simulation_params
+                        simulation_params.server_created_time = created_time
             return original_send_one_request(self, obj, tokenized_obj, created_time)
 
         target._send_one_request = wrapped_send_one_request
@@ -786,7 +805,7 @@ class C_SchedulerHook(BaseHook):
     OFFLINE_RECV_ALL_REQUEST: bool = False
     FUTURE_QUEUE: list[
         tuple[float, int, TokenizedGenerateReqInput]
-    ] = [] # requests that will be visible to the scheduler
+    ] = []  # requests that will be visible to the scheduler
     FUTURE_QUEUE_COUNTER: int = 0  # Monotonic tie-breaker for heap entries.
     RECEIVED_GENERATE_REQUESTS: int = 0  # Count generate requests received offline.
     EXPECTED_GENERATE_REQUESTS = None  # total_request expected for the run.
@@ -807,22 +826,63 @@ class C_SchedulerHook(BaseHook):
     @classmethod
     def _get_simulation_params(
         cls, req: TokenizedGenerateReqInput | ScheduleReq
-    ) -> dict | None:
+    ) -> SimulationParams | None:
         """Return HiSim simulation metadata carried by a scheduler request."""
-        sampling_params = getattr(req, "sampling_params", None)
-        custom_params = getattr(sampling_params, "custom_params", None)
-        if custom_params is None:
+        custom_params = req.sampling_params.custom_params
+        if custom_params is None or "simulation" not in custom_params:
             return None
-        return custom_params.get("simulation")
+        simulation_params = custom_params["simulation"]
+        if simulation_params is None:
+            return None
+        if not isinstance(simulation_params, SimulationParams):
+            raise TypeError(
+                "sampling_params.custom_params['simulation'] must be "
+                "SimulationParams or None; "
+                f"got {type(simulation_params).__name__}"
+            )
+        return simulation_params
 
     @classmethod
-    def _request_ready_time(cls, simulation_params: dict) -> float:
+    def _request_ready_time(cls, simulation_params: SimulationParams) -> float:
         """Return the logical time when a request may enter scheduling."""
-        queue_start = simulation_params.get("queue_start")
+        queue_start = simulation_params.queue_start
         return (
             queue_start
             if queue_start is not None
-            else simulation_params["created_time"]
+            else simulation_params.created_time
+        )
+
+    @classmethod
+    def _log_trace_queue_entry(
+        cls, req: TokenizedGenerateReqInput, ready_time: float
+    ) -> None:
+        """Log when a trace turn becomes visible to the future queue."""
+        sim_params = cls._get_simulation_params(req)
+        if sim_params is None:
+            return
+        trace_request_id = sim_params.trace_request_id
+        if trace_request_id is None:
+            return
+        logger.debug(
+            "Trace request entered future queue: trace_request_id=%s "
+            "trace_prev_request_id=%s rid=%s ready_time=%s",
+            trace_request_id,
+            sim_params.trace_prev_request_id,
+            req.rid,
+            ready_time,
+        )
+
+    @classmethod
+    def _log_trace_finish(
+        cls, trace_request_id: str | None, predecessor_completion_time: float
+    ) -> None:
+        """Log when a trace turn has completed generation."""
+        if trace_request_id is None:
+            return
+        logger.debug(
+            "Trace request finished: trace_request_id=%s completion_time=%s",
+            trace_request_id,
+            predecessor_completion_time,
         )
 
     @classmethod
@@ -850,6 +910,7 @@ class C_SchedulerHook(BaseHook):
             heapq.heappush(cls.FUTURE_QUEUE, item)
         else:
             cls.FUTURE_QUEUE.append(item)
+        cls._log_trace_queue_entry(req, ready_time)
 
     @classmethod
     def _ingest_offline_generate_requests(
@@ -867,13 +928,13 @@ class C_SchedulerHook(BaseHook):
                 )
                 continue
 
-            if sim_params.get("queue_start") is not None:
+            if sim_params.queue_start is not None:
                 logger.debug(
                     "Add request to waiting queue with custom queue start timestamp."
                 )
 
             cls.RECEIVED_GENERATE_REQUESTS += 1
-            total_request = sim_params["total_request"]
+            total_request = sim_params.total_request
             if cls.EXPECTED_GENERATE_REQUESTS is None:
                 cls.EXPECTED_GENERATE_REQUESTS = total_request
             elif cls.EXPECTED_GENERATE_REQUESTS != total_request:
@@ -882,8 +943,8 @@ class C_SchedulerHook(BaseHook):
                     f"expected={cls.EXPECTED_GENERATE_REQUESTS} got={total_request}"
                 )
 
-            trace_request_id = sim_params.get("trace_request_id")  # Current dense turn id.
-            trace_prev_request_id = sim_params.get("trace_prev_request_id")  # Redundant predecessor id for validation.
+            trace_request_id = sim_params.trace_request_id  # Current dense turn id.
+            trace_prev_request_id = sim_params.trace_prev_request_id  # Redundant predecessor id for validation.
             if trace_request_id is None:
                 cls._push_future_request(req, cls._request_ready_time(sim_params))
                 continue
@@ -953,6 +1014,7 @@ class C_SchedulerHook(BaseHook):
             return []
 
         cls.COMPLETED_TRACE_REQUEST_IDS.add(trace_request_id)
+        cls._log_trace_finish(trace_request_id, predecessor_completion_time)
         child_trace_request_id = cls._next_trace_request_id(trace_request_id)
         child = cls.PENDING_TRACE_REQUESTS.pop(child_trace_request_id, None)
         if child is None:
@@ -967,15 +1029,14 @@ class C_SchedulerHook(BaseHook):
             )
             return released
         ready_time = max(
-            child_sim_params["created_time"],
+            child_sim_params.created_time,
             predecessor_completion_time,
         )
-        child_sim_params.setdefault(
-            "original_created_time", child_sim_params["created_time"]
-        )
-        child_sim_params["dependency_ready_time"] = ready_time
-        child_sim_params["created_time"] = ready_time
-        child_sim_params["queue_start"] = ready_time
+        if child_sim_params.original_created_time is None:
+            child_sim_params.original_created_time = child_sim_params.created_time
+        child_sim_params.dependency_ready_time = ready_time
+        child_sim_params.created_time = ready_time
+        child_sim_params.queue_start = ready_time
         cls._push_future_request(child, ready_time)
         released.append(child)
         return released
@@ -1112,22 +1173,25 @@ class C_SchedulerHook(BaseHook):
                     req_stats.rid = req.rid
                     req_stats.input_length = len(req.input_ids)
                     req_stats.output_length = req.sampling_params.max_new_tokens
-                    simulation_args = req.sampling_params.custom_params["simulation"]
+                    simulation_args = C_SchedulerHook._get_simulation_params(req)
+                    assert simulation_args is not None, f"Missing simulation parameters for generate request {req.rid}"
                     if C_SchedulerHook.SIM_MODE == MockSimulationMode.BLOCKING:
-                        if "server_created_time" not in simulation_args:
+                        if simulation_args.server_created_time is None:
                             logger.warning(
                                 "The request's creation time is missing, which may cause the TTFT to be inaccurate."
                             )
-                        req_stats.created_time = simulation_args.get(
-                            "server_created_time", now
+                        req_stats.created_time = (
+                            simulation_args.server_created_time
+                            if simulation_args.server_created_time is not None
+                            else now
                         )
                         req_stats.last_event_time = req_stats.created_time
                         req_stats.queue_start = now
                     elif C_SchedulerHook.SIM_MODE == MockSimulationMode.OFFLINE:
-                        req_stats.created_time = simulation_args["created_time"]
+                        req_stats.created_time = simulation_args.created_time
                         req_stats.last_event_time = req_stats.created_time
                         # Align with the real queue start timestamp if queue_start is not None. For debugging only.
-                        queue_start = simulation_args.get("queue_start")
+                        queue_start = simulation_args.queue_start
                         if queue_start is not None:
                             StateManager.set_global_clock(queue_start)
                         req_stats.queue_start = StateManager.get_global_clock()
@@ -1267,12 +1331,16 @@ class C_SchedulerHook(BaseHook):
                             - req_stats.last_event_time  # queue duration
                         )
                         req_stats.last_event_time = request_response_time
-                        sim_params = C_SchedulerHook._get_simulation_params(req) or {}
+                        sim_params = C_SchedulerHook._get_simulation_params(req)
                         # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/managers/schedule_batch.py#L781-L783
                         finished = getattr(req, "finished", None)
                         if callable(finished) and finished():
                             C_SchedulerHook._release_trace_dependents(
-                                trace_request_id=sim_params.get("trace_request_id"),
+                                trace_request_id=(
+                                    sim_params.trace_request_id
+                                    if sim_params is not None
+                                    else None
+                                ),
                                 predecessor_completion_time=request_response_time,
                             )
                     else:

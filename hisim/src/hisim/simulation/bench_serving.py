@@ -50,6 +50,7 @@ from transformers import (
     PreTrainedTokenizerBase,
     PreTrainedTokenizerFast,
 )
+from hisim.simulation.types import SimulationParams
 
 ASSISTANT_SUFFIX = "Assistant:"
 
@@ -90,7 +91,7 @@ class RequestFuncInput:
     image_data: Optional[List[str]]
     extra_request_body: Dict[str, Any]
     timestamp: Optional[float] = None
-    simulation: Optional[dict] = None
+    simulation: Optional[SimulationParams] = None
 
 
 @dataclass
@@ -1881,15 +1882,7 @@ def sample_agentic_trace_requests(
             cache_path.unlink(missing_ok=True)
         else:
             if _is_valid_agentic_trace_cache(input_requests):
-                print(
-                    f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}"
-                )
-                print(
-                    f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}"
-                )
-                print(
-                    f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}"
-                )
+                _print_agentic_trace_request_summary(input_requests)
                 return input_requests
 
             print(
@@ -1949,22 +1942,20 @@ def sample_agentic_trace_requests(
                 output_len = len(output_ids)
                 # Prune too short sequences (copied from sharegpt).
                 if input_len < 2 or output_len < 2:
-                    messages.append({"role": role, "content": turn["value"]})
                     break
                 if context_len and input_len + output_len > context_len:
-                    messages.append({"role": role, "content": turn["value"]})
                     break
                 input_requests.append(
                     DatasetRow(
                         prompt=prompt if return_text else input_ids,
                         prompt_len=input_len,
                         output_len=output_len,
-                        simulation={
-                            "trace_session_id": conv_idx,
-                            "trace_turn_index": trace_turn_index,
-                            "trace_request_id": trace_request_id,  # Current turn id.
-                            "trace_prev_request_id": trace_prev_request_id,  # Previous dense turn id.
-                        },
+                        simulation=SimulationParams(
+                            trace_session_id=conv_idx,
+                            trace_turn_index=trace_turn_index,
+                            trace_request_id=trace_request_id,  # Current turn id.
+                            trace_prev_request_id=trace_prev_request_id,  # Previous dense turn id.
+                        ),
                     )
                 )
                 if num_requests and len(input_requests) >= num_requests:
@@ -1983,9 +1974,7 @@ def sample_agentic_trace_requests(
             f"but only {len(input_requests)} valid requests were available."
         )
 
-    print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
-    print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
-    print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+    _print_agentic_trace_request_summary(input_requests)
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Caching codex-swebenchpro-traces requests to {cache_path}")
@@ -2057,13 +2046,11 @@ async def get_request(
             trace_time_s = (request.timestamp - trace_start_time) / timestamp_scale_s
             target_arrival_time = start_time + (trace_time_s * slowdown_factor)
             # Hisim: simulation arguments
-            request.simulation.update(
-                {
-                    "created_time": (request.timestamp - trace_start_time)
-                    / timestamp_scale_s,
-                    "total_request": len(input_requests),
-                }
-            )
+            simulation = request.ensure_simulation_params()
+            simulation.created_time = (
+                request.timestamp - trace_start_time
+            ) / timestamp_scale_s
+            simulation.total_request = len(input_requests)
 
             sleep_duration = target_arrival_time - time.perf_counter()
             if sleep_duration > 0 and args.bench_mode != "simulation":
@@ -2074,12 +2061,9 @@ async def get_request(
         input_requests_iter = iter(input_requests)
         start_time = 0
         for request in input_requests_iter:
-            request.simulation.update(
-                {
-                    "created_time": start_time,
-                    "total_request": len(input_requests),
-                }
-            )
+            simulation = request.ensure_simulation_params()
+            simulation.created_time = start_time
+            simulation.total_request = len(input_requests)
             yield request
 
             if request_rate == float("inf"):

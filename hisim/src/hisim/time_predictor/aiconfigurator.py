@@ -65,7 +65,7 @@ MAP_DTYPE_TO_FMHAQuantMode = {
 MAP_DTYPE_TO_MoEQuantMode = {
     DataType.FP16: MoEQuantMode.float16,
     DataType.BF16: MoEQuantMode.float16,
-    DataType.FP8: MoEQuantMode.fp8,
+    DataType.FP8: MoEQuantMode.fp8_block,
     DataType.INT8: MoEQuantMode.fp8,
     DataType.FP4: MoEQuantMode.nvfp4,
     DataType.INT4: MoEQuantMode.int4_wo,
@@ -406,6 +406,33 @@ class AIConfiguratorTimePredictor(InferTimePredictor):
 
         if isinstance(database_mode, str):
             database_mode = self._get_database_mode(database_mode)
+
+        logger.info(
+            "AIConfigurator predictor config: "
+            "model=%s hw=%s backend=%s backend_version=%s "
+            "pp_size=%s tp_size=%s ep_size=%s dp_size=%s "
+            "max_running_requests=%s max_prefill_tokens=%s "
+            "chunked_prefill_size=%s page_size=%s "
+            "data_type=%s kv_cache_data_type=%s database_mode=%s "
+            "prefill_scale_factor=%s decode_scale_factor=%s",
+            model.name,
+            hw.name,
+            config.backend_name,
+            config.backend_version,
+            config.pp_size,
+            config.tp_size,
+            config.ep_size,
+            config.dp_size,
+            config.max_running_requests,
+            config.max_prefill_tokens,
+            config.chunked_prefill_size,
+            config.page_size,
+            config.data_type,
+            config.kv_cache_data_type,
+            database_mode,
+            self.prefill_scale_factor,
+            self.decode_scale_factor,
+        )
 
         database = get_database(
             system=hw.name,
