@@ -79,10 +79,11 @@ start_server() {
   HISIM_OUTPUT_DIR="${sim_output_dir}" \
   setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
     --model-path "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8" \
-    --sim-config "test/assets/mock/config.qwen3_235b.h100.json" \
+    --sim-config "test/assets/mock/config.qwen3_235b.b200.json" \
     --port "${PORT}" \
     --hicache-size "${size}" \
     --page-size "${PAGE_SIZE}" \
+    "${max_total_tokens_args[@]}" \
     --read-bw "${bw}" \
     --write-bw "${bw}" \
     > "${log_file}" 2>&1 &

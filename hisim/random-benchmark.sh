@@ -119,7 +119,6 @@ for size in "${hicache_sizes[@]}"; do
       mkdir -p "${OUTPUT_DIR}" "${OUTPUT_DIR}/logs" "${SIM_OUTPUT_DIR}"
       echo "${PREFIX} — starting server..."
       start_server "${size}" "${bw}" "${LOG_PREFIX}_server.log" "${SIM_OUTPUT_DIR}"
-      echo "The server is fired up and ready to roll!"
       echo "${PREFIX} — testing..."
       bench "${rate}" "${LOG_PREFIX}_bench.log" "${SIM_OUTPUT_DIR}"
       echo "${PREFIX} — shutting down..."

@@ -26,7 +26,15 @@ def excluding_queue_mean_median_p99() -> ChartSpec:
 
 
 def excluding_queue_mean_median() -> ChartSpec:
-    return excluding_queue_mean_median_p99()
+    return ChartSpec(
+        key="ttft_excluding_queue_mean_median",
+        title="Time to First Token Excluding Queue",
+        ylabel="milliseconds",
+        series=(
+            ("mean", "mean_ttft_excluding_queue_ms"),
+            ("median", "median_ttft_excluding_queue_ms"),
+        ),
+    )
 
 
 def median() -> ChartSpec:

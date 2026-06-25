@@ -30,9 +30,7 @@ class FakeCodexTokenizer:
     def apply_chat_template(
         self, messages, tokenize=False, add_generation_prompt=True
     ):
-        rendered = " ".join(f"{m['role']} {m['content']}" for m in messages)
-        if add_generation_prompt:
-            rendered = f"{rendered} assistant"
+        rendered = " ".join(str(m["content"]) for m in messages)
         if tokenize:
             return self.encode(rendered)
         return rendered
@@ -56,15 +54,15 @@ def codex_trace_path(tmp_path):
         {
             "conversations": [
                 {"from": "human", "value": "open the file please"},
-                {"from": "gpt", "value": "assistant answer one"},
+                {"from": "gpt", "value": "answer one"},
                 {"from": "human", "value": "now inspect the result"},
-                {"from": "gpt", "value": "assistant answer two"},
+                {"from": "gpt", "value": "answer two"},
             ]
         },
         {
             "conversations": [
                 {"from": "human", "value": "run the tests please"},
-                {"from": "gpt", "value": "assistant answer three"},
+                {"from": "gpt", "value": "answer three"},
             ]
         },
     ]
@@ -82,6 +80,21 @@ def test_sample_agentic_trace_requests_generates_dependency_metadata(
 
     assert len(rows) == 3
     assert "#Codex trace turn distribution: turn1: 2, turn2: 1" in output
+    assert [
+        (
+            row.simulation.trace_request_id,
+            row.prompt_len,
+            row.output_len,
+        )
+        for row in rows
+    ] == [
+        # input: "open the file please"; output: "answer one"
+        ("0:0", 4, 2),
+        # input: previous human+assistant turn plus "now inspect the result"
+        ("0:1", 10, 2),
+        # input: "run the tests please"; output: "answer three"
+        ("1:0", 4, 2),
+    ]
     assert rows[0].simulation == SimulationParams(
         trace_session_id=0,
         trace_turn_index=0,
