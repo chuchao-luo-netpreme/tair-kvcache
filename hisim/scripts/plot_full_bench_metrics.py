@@ -15,6 +15,7 @@ RANDOM_BENCH_X_AXES = ("dram-bandwidth", "dram-size")
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse random benchmark input, x-axis, and output options."""
     parser = argparse.ArgumentParser(
         description=(
             "Plot TTFT, TPOT, ITL, prefix cache reuse, throughput, and "
@@ -47,6 +48,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def plot(rows: list[Row], x_axis: str, output: Path) -> None:
+    """Render the default full benchmark metric chart set."""
     render_charts(
         rows,
         x_axis,
@@ -57,6 +59,7 @@ def plot(rows: list[Row], x_axis: str, output: Path) -> None:
 
 
 def main() -> None:
+    """Load random benchmark rows and write the full metric plot."""
     args = parse_args()
     output = args.output or args.input_dir / X_AXIS_CONFIG[args.x_axis]["output_name"]
     rows = load_rows(args.input_dir, args.x_axis)

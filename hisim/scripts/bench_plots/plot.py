@@ -15,6 +15,7 @@ from .chart_spec import ChartSpec
 
 
 def get_fixed_value(rows: list[Row], key: str) -> float | None:
+    """Return a field value only when it is constant across all rows."""
     values = [row.get(key) for row in rows if row.get(key) is not None]
     if not values:
         return None
@@ -25,12 +26,14 @@ def get_fixed_value(rows: list[Row], key: str) -> float | None:
 
 
 def format_number(value: float) -> str:
+    """Format axis and parameter values for compact plot labels."""
     if value.is_integer():
         return f"{value:,.0f}"
     return f"{value:,.2f}"
 
 
 def build_fixed_param_label(rows: list[Row], x_axis: str) -> str:
+    """Build the subtitle that lists fixed benchmark parameters."""
     params = []
     candidates = [
         ("dram_size_gb", "DRAM size", "GB"),
@@ -58,6 +61,7 @@ def build_fixed_param_label(rows: list[Row], x_axis: str) -> str:
 
 
 def set_zero_based_ylim(ax, values: list[float], is_percent: bool = False) -> None:
+    """Set a zero-based y-axis with padding for metric values."""
     if not values:
         ax.set_ylim(bottom=0, top=1)
         return
@@ -70,6 +74,7 @@ def set_zero_based_ylim(ax, values: list[float], is_percent: bool = False) -> No
 
 
 def plot_chart(ax, rows: list[Row], x_axis: str, chart: ChartSpec) -> None:
+    """Draw one configured benchmark chart onto an axes object."""
     x_config = X_AXIS_CONFIG[x_axis]
     x_key = x_config["row_key"]
     x_values = [float(row[x_key]) for row in rows if row.get(x_key) is not None]
@@ -127,6 +132,7 @@ def render_charts(
     output: Path,
     title: str = "Benchmark Metrics",
 ) -> None:
+    """Render a grid of benchmark charts to a PNG file."""
     if not charts:
         raise ValueError("At least one chart is required")
 
