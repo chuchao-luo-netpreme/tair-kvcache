@@ -59,7 +59,7 @@ def test_config_manager_kv_cache_bytes_uses_simulated_tp_size():
         ConfigManager._scheduler_config = old_scheduler_config
 
 
-def test_sim_args_accepts_parallel_scheduler_overrides():
+def test_sim_args_accepts_scheduler_config_overrides():
     parser = argparse.ArgumentParser()
     SimulationArgs.add_cli_args(parser)
 
@@ -78,7 +78,7 @@ def test_sim_args_accepts_parallel_scheduler_overrides():
     assert args.scheduler.dp_size == 4
 
 
-def test_scheduler_parallel_config_overrides_fields_independently():
+def test_scheduler_config_overrides_fields_independently():
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
         json.dump(
             {
@@ -195,8 +195,8 @@ if __name__ == "__main__":
     test_attention_tp_size_uses_simulated_tp_size()
     test_kv_cache_cell_elems_uses_simulated_tp_size_when_dp_attention_disabled()
     test_config_manager_kv_cache_bytes_uses_simulated_tp_size()
-    test_sim_args_accepts_parallel_scheduler_overrides()
-    test_scheduler_parallel_config_overrides_fields_independently()
+    test_sim_args_accepts_scheduler_config_overrides()
+    test_scheduler_config_overrides_fields_independently()
     test_internal_config_does_not_carry_dp_attention()
     test_scheduler_rejects_sglang_dp_attention()
     test_scheduler_rejects_hisim_dp_attention()
