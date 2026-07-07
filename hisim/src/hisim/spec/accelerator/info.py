@@ -66,23 +66,24 @@ class NVIDIA:
         save_to_registry=True,
     )
 
-    NVIDIA_H20 = AcceleratorInfo.from_dict(
+    NVIDIA_GB300 = AcceleratorInfo.from_dict(
         config={
-            "name": "NVIDIA H20",
-            "device_alias": ["H20", "h20_sxm"],
+            "name": "NVIDIA GB300",
+            "device_alias": ["GB300", "gb300"],
             "tflops": {
-                "FP8_TENSOR": 296,
-                "INT8_TENSOR": 296,
-                "FP16_TENSOR": 148,
-                "BF16_TENSOR": 148,
-                "FP32": 74,
+                "FP4_TENSOR": 15000,
+                "FP8_TENSOR": 5000,
+                "INT8_TENSOR": 165,
+                "FP16_TENSOR": 2500,
+                "BF16_TENSOR": 2500,
+                "FP32": 83,
             },
-            "hbm_capacity_gb": 96,
-            "hbm_bandwidth_gb": 4022,
-            "inter_node_bandwidth_gb": 64,
-            "intra_node_bandwidth_gb": 450,
+            "hbm_capacity_gb": 298,
+            "hbm_bandwidth_gb": 8000,
+            "inter_node_bandwidth_gb": 100,
+            "intra_node_bandwidth_gb": 900,
             "vendor": "NVIDIA",
-            "ref": "https://viperatech.com/product/nvidia-hgx-h20",
+            "ref": "https://www.nvidia.com/en-us/data-center/gb300-nvl72/",
         },
         save_to_registry=True,
     )

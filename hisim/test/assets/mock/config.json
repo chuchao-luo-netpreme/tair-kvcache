@@ -1,7 +1,7 @@
 {
     "platform": {
         "accelerator": {
-            "name": "H20"
+            "name": "H100"
         },
         "disk_read_bandwidth_gb": 8,
         "disk_write_bandwidth_gb": 8,
@@ -17,6 +17,6 @@
         "tp_size": 1,
         "ep_size": 1,
         "dp_size": 1,
-        "backend_version": "0.5.6.post2"
+        "backend_version": "0.5.9"
     }
 }
