@@ -20,6 +20,6 @@
         "tp_size": 4,
         "data_type": "BF16",
         "kv_cache_data_type": "FP8",
-        "backend_version": "0.5.6.post2"
+        "backend_version": "0.5.9"
     }
 }

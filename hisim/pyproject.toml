@@ -10,9 +10,8 @@ dependencies = [
     "numpy",
     "scikit-learn",
     "xgboost",
-    "aiconfigurator @ /home/chuchao/aiconfigurator",
-    # "aiconfigurator @ git+https://github.com/ai-dynamo/aiconfigurator.git@main",
-    "sglang==0.5.6.post2",
+    "aiconfigurator @ git+https://github.com/ai-dynamo/aiconfigurator.git@e46ece7510e727fafefb8212e5846172145a30ea",
+    "sglang==0.5.9",
     "torch==2.9.1",
 ]
 

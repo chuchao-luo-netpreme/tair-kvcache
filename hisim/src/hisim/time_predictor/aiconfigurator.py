@@ -12,15 +12,12 @@ from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.common import (
     CommQuantMode,
     FMHAQuantMode,
-    GEMMQuantMode,
     KVCacheQuantMode,
-    MoEQuantMode,
     DatabaseMode,
-    SupportedModels,
 )
 from aiconfigurator.sdk.config import RuntimeConfig, ModelConfig
 from aiconfigurator.sdk.inference_session import InferenceSession
-from aiconfigurator.sdk.perf_database import get_database, get_system_config_path
+from aiconfigurator.sdk.perf_database import get_database
 
 from hisim.simulation.types import (
     SchedulerConfig,
@@ -33,42 +30,17 @@ from hisim.time_predictor import (
 from hisim.utils import get_logger
 
 
-# Map the common data types to AIConfigurator data types.
-MAP_DTYPE_TO_GEMMQuantMode = {
-    DataType.FP16: GEMMQuantMode.float16,
-    DataType.BF16: GEMMQuantMode.float16,
-    DataType.FP8: GEMMQuantMode.fp8_block,
-    DataType.INT8: GEMMQuantMode.int8_wo,
-    DataType.FP4: GEMMQuantMode.nvfp4,
-    DataType.INT4: GEMMQuantMode.int4_wo,
-    DataType.FP16_TENSOR: GEMMQuantMode.float16,
-    DataType.BF16_TENSOR: GEMMQuantMode.float16,
-    DataType.FP8_TENSOR: GEMMQuantMode.fp8,
-    DataType.INT8_TENSOR: GEMMQuantMode.int8_wo,
-    DataType.FP4_TENSOR: GEMMQuantMode.nvfp4,
-    DataType.INT4_TENSOR: GEMMQuantMode.int4_wo,
-}
-
 MAP_DTYPE_TO_KVCacheQuantMode = {
-    DataType.FP16: KVCacheQuantMode.float16,
-    DataType.BF16: KVCacheQuantMode.float16,
+    DataType.FP16: KVCacheQuantMode.bfloat16,
+    DataType.BF16: KVCacheQuantMode.bfloat16,
     DataType.FP8: KVCacheQuantMode.fp8,
     DataType.INT8: KVCacheQuantMode.int8,
 }
 
 MAP_DTYPE_TO_FMHAQuantMode = {
-    DataType.FP16: FMHAQuantMode.float16,
-    DataType.BF16: FMHAQuantMode.float16,
+    DataType.FP16: FMHAQuantMode.bfloat16,
+    DataType.BF16: FMHAQuantMode.bfloat16,
     DataType.FP8: FMHAQuantMode.fp8,
-}
-
-MAP_DTYPE_TO_MoEQuantMode = {
-    DataType.FP16: MoEQuantMode.float16,
-    DataType.BF16: MoEQuantMode.float16,
-    DataType.FP8: MoEQuantMode.fp8_block,
-    DataType.INT8: MoEQuantMode.fp8,
-    DataType.FP4: MoEQuantMode.nvfp4,
-    DataType.INT4: MoEQuantMode.int4_wo,
 }
 
 MAP_DTYPE_TO_CommQunatMode = {
@@ -264,24 +236,102 @@ def _parse_decode_bs_range_from_xgb_model_path(
     return lo, hi
 
 
+def _resolve_aic_model_path(model: ModelInfo) -> str:
+    if model.model_path:
+        model_path = model.model_path
+        if os.path.isfile(model_path):
+            model_path = os.path.dirname(model_path)
+        return model_path
+
+    model_name = model.name
+    if model.model_type == "gpt_oss" and "/" not in model_name:
+        return "openai/gpt-oss-120b" if model.n_routed_experts >= 64 else "openai/gpt-oss-20b"
+
+    if model_name:
+        return {
+            "GPT_OSS_120B": "openai/gpt-oss-120b",
+            "GPT_OSS_20B": "openai/gpt-oss-20b",
+        }.get(model_name, model_name)
+
+    raise ValueError("ModelInfo must provide either model_path or name for AIConfigurator.")
+
+
+def _is_moe_model(model: ModelInfo) -> bool:
+    return bool(
+        getattr(model, "n_routed_experts", 0)
+        or getattr(model, "num_experts_per_tok", 0)
+        or getattr(model, "moe_intermediate_size", 0)
+    )
+
+
+def _resolve_aic_moe_parallelism(
+    sched_config: SchedulerConfig, model: ModelInfo
+) -> tuple[int, int]:
+    tp_size = sched_config.tp_size or 1
+    dp_size = sched_config.dp_size or 1
+    ep_size = sched_config.ep_size or 1
+
+    if not _is_moe_model(model):
+        return tp_size, ep_size
+
+    # Keep attention TP unchanged, but model MoE weights as EP-only. This satisfies
+    # AIC's tp * dp == moe_tp * moe_ep constraint and avoids splitting FP8 block-
+    # scaled expert weights across an unaligned MoE TP shard.
+    return 1, tp_size * dp_size
+
+
+def _config_value(value):
+    return value.name if hasattr(value, "name") else value
+
+
+def _log_aic_model_config(
+    model: ModelInfo,
+    model_path: str,
+    sched_config: SchedulerConfig,
+    model_config: ModelConfig,
+) -> None:
+    logger.info(
+        "AIConfigurator model config: "
+        "model=%s model_path=%s backend=%s backend_version=%s "
+        "pp_size=%s tp_size=%s moe_tp_size=%s moe_ep_size=%s "
+        "attention_dp_size=%s attention_cp_size=%s "
+        "gemm_quant_mode=%s moe_quant_mode=%s kvcache_quant_mode=%s "
+        "fmha_quant_mode=%s comm_quant_mode=%s workload_distribution=%s",
+        getattr(model, "name", ""),
+        model_path,
+        sched_config.backend_name,
+        sched_config.backend_version,
+        model_config.pp_size,
+        model_config.tp_size,
+        model_config.moe_tp_size,
+        model_config.moe_ep_size,
+        model_config.attention_dp_size,
+        getattr(model_config, "attention_cp_size", None),
+        _config_value(model_config.gemm_quant_mode),
+        _config_value(model_config.moe_quant_mode),
+        _config_value(model_config.kvcache_quant_mode),
+        _config_value(model_config.fmha_quant_mode),
+        _config_value(model_config.comm_quant_mode),
+        model_config.workload_distribution,
+    )
+
+
 def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.BaseModel:
+    # Leave model weight quantization unset. AIC 0.9 infers fp8/fp8_block/fp8_static/nvfp4
+    # from the raw model config; mapping HiSim DataType.FP8 here would incorrectly erase
+    # the distinction between per-tensor FP8 and block-scaled FP8.
+    moe_tp_size, moe_ep_size = _resolve_aic_moe_parallelism(sched_config, model)
     model_config = ModelConfig(
         pp_size=sched_config.pp_size,
         tp_size=sched_config.tp_size,
-        moe_tp_size=sched_config.tp_size,  # FIXME
-        moe_ep_size=sched_config.ep_size,
+        moe_tp_size=moe_tp_size,
+        moe_ep_size=moe_ep_size,
         attention_dp_size=sched_config.dp_size,  # FIXME
-        gemm_quant_mode=MAP_DTYPE_TO_GEMMQuantMode.get(
-            sched_config.data_type, GEMMQuantMode.float16
-        ),
-        moe_quant_mode=MAP_DTYPE_TO_MoEQuantMode.get(
-            sched_config.data_type, MoEQuantMode.float16
-        ),
         kvcache_quant_mode=MAP_DTYPE_TO_KVCacheQuantMode.get(
-            sched_config.kv_cache_data_type, KVCacheQuantMode.float16
+            sched_config.kv_cache_data_type
         ),
         fmha_quant_mode=MAP_DTYPE_TO_FMHAQuantMode.get(
-            sched_config.kv_cache_data_type, FMHAQuantMode.float16
+            sched_config.kv_cache_data_type
         ),
         comm_quant_mode=MAP_DTYPE_TO_CommQunatMode.get(
             sched_config.data_type, CommQuantMode.half
@@ -289,102 +339,14 @@ def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.Ba
         workload_distribution="power_law_1.2",
     )
 
-    if model.model_type in ["qwen", "qwen2", "qwen3", "llama", "chatglm"]:
-        # aiconfigurator.sdk.backends.trtllm_backend._get_memory_usage() requires the SupportedModels.
-        SupportedModels.update(
-            {
-                model.name: [
-                    "LLAMA",
-                    model.num_hidden_layers,
-                    model.num_attention_heads,
-                    model.num_key_value_heads,
-                    model.head_dim,
-                    model.hidden_size,
-                    model.intermediate_size,
-                    model.vocab_size,
-                    model.max_seq_len,
-                    0,
-                    0,
-                    0,
-                    None,
-                ]
-            }
-        )
-    elif model.model_type in ["deepseek_v3", "kimi_k2"]:
-        SupportedModels.update(
-            {
-                model.name: [
-                    "DEEPSEEK",
-                    model.num_hidden_layers,
-                    model.num_attention_heads,
-                    model.num_key_value_heads,
-                    model.head_dim,
-                    model.hidden_size,
-                    model.intermediate_size,
-                    model.vocab_size,
-                    model.max_seq_len,
-                    model.num_experts_per_tok,
-                    model.n_routed_experts,
-                    model.moe_intermediate_size,
-                    None,
-                ]
-            }
-        )
-    elif model.model_type == "gpt_oss":
-        # SDK hardcodes window_size=128 only when model_name is "GPT_OSS_120B"/"GPT_OSS_20B".
-        # Map by expert count to the canonical SDK name so the lookup succeeds.
-        sdk_name = "GPT_OSS_120B" if model.n_routed_experts >= 64 else "GPT_OSS_20B"
-        SupportedModels.update(
-            {
-                sdk_name: [
-                    "MOE",
-                    model.num_hidden_layers,
-                    model.num_attention_heads,
-                    model.num_key_value_heads,
-                    model.head_dim,
-                    model.hidden_size,
-                    model.intermediate_size,
-                    model.vocab_size,
-                    model.max_seq_len,
-                    model.num_experts_per_tok,
-                    model.n_routed_experts,
-                    model.moe_intermediate_size,
-                    None,
-                ]
-            }
-        )
-        return models.get_model(
-            model_name=sdk_name,
-            model_config=model_config,
-            backend_name=sched_config.backend_name,
-        )
-    elif model.model_type in ["qwen3_moe"]:
-        SupportedModels.update(
-            {
-                model.name: [
-                    "MOE",
-                    model.num_hidden_layers,
-                    model.num_attention_heads,
-                    model.num_key_value_heads,
-                    model.head_dim,
-                    model.hidden_size,
-                    model.intermediate_size,
-                    model.vocab_size,
-                    model.max_seq_len,
-                    model.num_experts_per_tok,
-                    model.n_routed_experts,
-                    model.moe_intermediate_size,
-                    None,
-                ]
-            }
-        )
-    else:
-        raise ValueError(f"Unsupported model type: {model.model_type}")
-    return models.get_model(
-        model_name=model.name,
+    model_path = _resolve_aic_model_path(model)
+    perf_model = models.get_model(
+        model_path=model_path,
         model_config=model_config,
         backend_name=sched_config.backend_name,
     )
+    _log_aic_model_config(model, model_path, sched_config, model_config)
+    return perf_model
 
 
 class AIConfiguratorTimePredictor(InferTimePredictor):
@@ -408,27 +370,20 @@ class AIConfiguratorTimePredictor(InferTimePredictor):
             database_mode = self._get_database_mode(database_mode)
 
         logger.info(
-            "AIConfigurator predictor config: "
+            "AIConfigurator predictor runtime config: "
             "model=%s hw=%s backend=%s backend_version=%s "
-            "pp_size=%s tp_size=%s ep_size=%s dp_size=%s "
             "max_running_requests=%s max_prefill_tokens=%s "
             "chunked_prefill_size=%s page_size=%s "
-            "data_type=%s kv_cache_data_type=%s database_mode=%s "
+            "database_mode=%s "
             "prefill_scale_factor=%s decode_scale_factor=%s",
             model.name,
             hw.name,
             config.backend_name,
             config.backend_version,
-            config.pp_size,
-            config.tp_size,
-            config.ep_size,
-            config.dp_size,
             config.max_running_requests,
             config.max_prefill_tokens,
             config.chunked_prefill_size,
             config.page_size,
-            config.data_type,
-            config.kv_cache_data_type,
             database_mode,
             self.prefill_scale_factor,
             self.decode_scale_factor,
@@ -438,29 +393,14 @@ class AIConfiguratorTimePredictor(InferTimePredictor):
             system=hw.name,
             backend=config.backend_name,
             version=config.backend_version,
-            systems_dir=database_path
-            if database_path is not None
-            else get_system_config_path(),
+            systems_paths=database_path,
+            database_mode=database_mode.name,
         )
 
         if database is None:
             raise ValueError("Failed to initialize the database.")
 
         database.set_default_database_mode(database_mode)
-
-        # --- Replace the original function to support more flexible request input. --- #
-
-        db_nearest_1d_point_helper = database._nearest_1d_point_helper
-
-        def wrapped_nearest_1d_point_helper(
-            x: int, values: list[int], inner_only: bool = False
-        ):
-            # Disable the inner_only by default
-            return db_nearest_1d_point_helper(x, values, inner_only)
-
-        database._nearest_1d_point_helper = wrapped_nearest_1d_point_helper
-
-        # --- End --- #
 
         self._session = InferenceSession(
             model=get_perf_model(config, model),

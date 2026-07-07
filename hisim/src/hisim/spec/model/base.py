@@ -204,6 +204,7 @@ class ModelInfo:
 
     @classmethod
     def from_config(cls, config: Dict):
+        config = dict(config)
         model_info = cls.find_by_model_name(config.get("name", ""))
         if model_info is not None:
             # deepcopy -> prevent model information from being modified.

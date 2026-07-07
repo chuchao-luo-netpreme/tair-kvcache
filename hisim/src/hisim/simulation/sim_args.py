@@ -9,7 +9,7 @@ logger = get_logger("hisim")
 
 @dataclasses.dataclass
 class AcceleratorConfig:
-    name: str = "H20"
+    name: str = "H100"
 
 
 @dataclasses.dataclass
@@ -94,6 +94,13 @@ class SimulationArgs:
             type=float,
             default=None,
         )
+        parser.add_argument(
+            # TODO: Wire this into topology/AIC modeling or mark it as metadata only.
+            f"--{prefix}num-device-per-node",
+            dest="sim_num_device_per_node",
+            type=int,
+            default=None,
+        )
 
         parser.add_argument(
             f"--{prefix}predictor-name",
@@ -165,7 +172,7 @@ class SimulationArgs:
         return SimulationArgs(
             config_path=path,
             platform=PlatformConfig(
-                accelerator=AcceleratorConfig(name=accelerator.get("name", "H20")),
+                accelerator=AcceleratorConfig(name=accelerator.get("name", "H100")),
                 disk_read_bandwidth_gb=platform.get("disk_read_bandwidth_gb", 4.0),
                 disk_write_bandwidth_gb=platform.get("disk_write_bandwidth_gb", 4.0),
                 memory_read_bandwidth_gb=platform.get("memory_read_bandwidth_gb", 64.0),

@@ -128,7 +128,10 @@ class C_ModelRunnerHook(BaseHook):
                 self.dtype
             )  # FIXME: get kv cache dtype from server args
 
-            model = ConfigManager.get_model_info(self.model_config.hf_config.__dict__)
+            model = ConfigManager.get_model_info(
+                self.model_config.hf_config.__dict__,
+                model_path=getattr(self.server_args, "model_path", None),
+            )
             hw = ConfigManager.get_accelerator_info()
             config = ConfigManager.get_scheduler_config(
                 self.server_args.__dict__,
@@ -1103,7 +1106,8 @@ class C_SchedulerHook(BaseHook):
 
             try:
                 model = ConfigManager.get_model_info(
-                    self.model_config.hf_config.__dict__
+                    self.model_config.hf_config.__dict__,
+                    model_path=getattr(self.server_args, "model_path", None),
                 )
                 hw = ConfigManager.get_accelerator_info()
                 sched_config = ConfigManager.get_scheduler_config(

@@ -27,17 +27,25 @@ class ConfigManager:
         cls._model_info = model
 
     @classmethod
-    def get_model_info(cls, hf_config: dict | None) -> ModelInfo:
-        if hf_config is not None:
-            model = ModelInfo.from_config(hf_config)
-            if model is None:
-                logger.error(
-                    f"Failed to initialize model information with configuration: {hf_config}"
-                )
-        else:
-            with open(Envs.config_path()) as f:
-                config: dict = json.load(f)
-            model = ModelInfo.find_by_model_name(config.get("model", {}).get("name"))
+    def get_model_info(
+        cls, hf_config: dict | None, model_path: str | None = None
+    ) -> ModelInfo:
+        if hf_config is None:
+            raise ValueError(
+                "hf_config is required to build ModelInfo. HiSim derives model "
+                "structure from SGLang's loaded HF config"
+            )
+
+        hf_config = dict(hf_config)
+        model_path = model_path or hf_config.get("_name_or_path")
+        if model_path:
+            hf_config.setdefault("model_path", model_path)
+            hf_config.setdefault("name", model_path)
+        model = ModelInfo.from_dict(hf_config)
+        if model is None:
+            logger.error(
+                f"Failed to initialize model information with configuration: {hf_config}"
+            )
 
         return model
 
@@ -117,7 +125,9 @@ class ConfigManager:
     def get_scheduler_config(
         cls, server_args: dict, backend: str, hf_config: dict | None = None
     ):
-        model = ConfigManager.get_model_info(hf_config)
+        model = ConfigManager.get_model_info(
+            hf_config, model_path=server_args.get("model_path")
+        )
 
         internal_config = cls._parse_server_args(server_args, backend)
 
