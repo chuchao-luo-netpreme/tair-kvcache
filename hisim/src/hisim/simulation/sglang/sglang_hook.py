@@ -9,6 +9,7 @@ import importlib
 import sys
 import threading
 from queue import Empty
+from typing import TYPE_CHECKING, Any
 
 from hisim.utils import get_logger
 
@@ -16,6 +17,7 @@ from hisim.hook import BaseHook
 from hisim.simulation.types import (
     MockSimulationMode,
     RequestStats,
+    SimulationParams,
 )
 from hisim.hook.utils import get_obj_from_args
 from hisim.utils.json import CustomJsonEncoder
@@ -42,6 +44,27 @@ from hisim.simulation.sglang.version import VersionDispatcher
 
 
 logger = get_logger("hisim")
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.io_struct import TokenizedGenerateReqInput
+    from sglang.srt.managers.schedule_batch import Req as ScheduleReq
+else:
+    TokenizedGenerateReqInput = Any
+    ScheduleReq = Any
+
+
+def _simulation_params_from_http(value: object) -> SimulationParams | None:
+    """Deserialize simulation metadata carried by HTTP custom_params."""
+    if value is None:
+        return None
+    if isinstance(value, SimulationParams):
+        return value
+    if not isinstance(value, dict):
+        raise TypeError(
+            "sampling_params.custom_params['simulation'] must be "
+            f"dict, SimulationParams, or None; got {type(value).__name__}"
+        )
+    return SimulationParams.from_dict(value)
 
 
 class C_EngineHook(BaseHook):
@@ -73,9 +96,13 @@ class C_TokenizerManagerHook(BaseHook):
                     tokenized_obj.sampling_params.custom_params is not None
                     and "simulation" in tokenized_obj.sampling_params.custom_params
                 ):
-                    tokenized_obj.sampling_params.custom_params["simulation"][
-                        "server_created_time"
-                    ] = created_time
+                    custom_params = tokenized_obj.sampling_params.custom_params
+                    simulation_params = _simulation_params_from_http(
+                        custom_params["simulation"]
+                    )
+                    if simulation_params is not None:
+                        custom_params["simulation"] = simulation_params
+                        simulation_params.server_created_time = created_time
             return original_send_one_request(self, obj, tokenized_obj, created_time)
 
         target._send_one_request = wrapped_send_one_request
@@ -777,10 +804,274 @@ class C_SchedulerHook(BaseHook):
     SIM_MODE = MockSimulationMode(Envs.simulation_mode())
     OFFLINE_RECV_ALL_REQUEST: bool = False
     FUTURE_QUEUE: list[
-        tuple[float, int, RequestStats]
-    ] = []  # tuple(created time, salt, request)
+        tuple[float, int, TokenizedGenerateReqInput]
+    ] = []  # requests that will be visible to the scheduler
+    FUTURE_QUEUE_COUNTER: int = 0  # Monotonic tie-breaker for heap entries.
+    RECEIVED_GENERATE_REQUESTS: int = 0  # Count generate requests received offline.
+    EXPECTED_GENERATE_REQUESTS = None  # total_request expected for the run.
+    PENDING_TRACE_REQUESTS: dict[
+        str, TokenizedGenerateReqInput
+    ] = {}  # trace id -> blocked TokenizedGenerateReqInput.
+    COMPLETED_TRACE_REQUEST_IDS: set[str] = set()  # Trace ids whose req finished.
+    SEEN_TRACE_REQUEST_IDS: set[str] = set()  # Trace ids received by the scheduler.
 
     SCHEDULE_REQ_STATS = []
+
+    @classmethod
+    def _next_future_queue_counter(cls) -> int:
+        """Return a monotonic tie-breaker for future-queue heap entries."""
+        cls.FUTURE_QUEUE_COUNTER += 1
+        return cls.FUTURE_QUEUE_COUNTER
+
+    @classmethod
+    def _get_simulation_params(
+        cls, req: TokenizedGenerateReqInput | ScheduleReq
+    ) -> SimulationParams | None:
+        """Return HiSim simulation metadata carried by a scheduler request."""
+        custom_params = req.sampling_params.custom_params
+        if custom_params is None or "simulation" not in custom_params:
+            return None
+        simulation_params = custom_params["simulation"]
+        if simulation_params is None:
+            return None
+        if not isinstance(simulation_params, SimulationParams):
+            raise TypeError(
+                "sampling_params.custom_params['simulation'] must be "
+                "SimulationParams or None; "
+                f"got {type(simulation_params).__name__}"
+            )
+        return simulation_params
+
+    @classmethod
+    def _request_ready_time(cls, simulation_params: SimulationParams) -> float:
+        """Return the logical time when a request may enter scheduling."""
+        queue_start = simulation_params.queue_start
+        return (
+            queue_start
+            if queue_start is not None
+            else simulation_params.created_time
+        )
+
+    @classmethod
+    def _log_trace_queue_entry(
+        cls, req: TokenizedGenerateReqInput, ready_time: float
+    ) -> None:
+        """Log when a trace turn becomes visible to the future queue."""
+        sim_params = cls._get_simulation_params(req)
+        if sim_params is None:
+            return
+        trace_request_id = sim_params.trace_request_id
+        if trace_request_id is None:
+            return
+        logger.debug(
+            "Trace request entered future queue: trace_request_id=%s "
+            "trace_prev_request_id=%s rid=%s ready_time=%s",
+            trace_request_id,
+            sim_params.trace_prev_request_id,
+            req.rid,
+            ready_time,
+        )
+
+    @classmethod
+    def _log_trace_finish(
+        cls, trace_request_id: str | None, predecessor_completion_time: float
+    ) -> None:
+        """Log when a trace turn has completed generation."""
+        if trace_request_id is None:
+            return
+        logger.debug(
+            "Trace request finished: trace_request_id=%s completion_time=%s",
+            trace_request_id,
+            predecessor_completion_time,
+        )
+
+    @classmethod
+    def _previous_trace_request_id(cls, trace_request_id: str) -> str | None:
+        """Return the predecessor id implied by a dense trace request id."""
+        session_id, turn_index_text = trace_request_id.rsplit(":", 1)
+        turn_index = int(turn_index_text)
+        if turn_index == 0:
+            return None
+        return f"{session_id}:{turn_index - 1}"
+
+    @classmethod
+    def _next_trace_request_id(cls, trace_request_id: str) -> str:
+        """Return the child id implied by a dense trace request id."""
+        session_id, turn_index_text = trace_request_id.rsplit(":", 1)
+        return f"{session_id}:{int(turn_index_text) + 1}"
+
+    @classmethod
+    def _push_future_request(
+        cls, req: TokenizedGenerateReqInput, ready_time: float
+    ) -> None:
+        """Register a request for scheduler admission at its ready time."""
+        item = (ready_time, cls._next_future_queue_counter(), req)
+        if cls.OFFLINE_RECV_ALL_REQUEST:
+            heapq.heappush(cls.FUTURE_QUEUE, item)
+        else:
+            cls.FUTURE_QUEUE.append(item)
+        cls._log_trace_queue_entry(req, ready_time)
+
+    @classmethod
+    def _ingest_offline_generate_requests(
+        cls, gen_requests: list[TokenizedGenerateReqInput]
+    ) -> list[TokenizedGenerateReqInput]:
+        """Classify received offline generate requests into runnable and blocked sets."""
+        extra_requests: list[TokenizedGenerateReqInput] = []
+        for req in gen_requests:
+            sim_params = cls._get_simulation_params(req)
+            if sim_params is None:
+                # There are some warm-up requests when starting the server without --skip-server-warmup.
+                extra_requests.append(req)
+                logger.warning(
+                    "Failed to extract the simulation parameters required for simulation from the request. Ignore this warning if the request is a warm-up request."
+                )
+                continue
+
+            if sim_params.queue_start is not None:
+                logger.debug(
+                    "Add request to waiting queue with custom queue start timestamp."
+                )
+
+            cls.RECEIVED_GENERATE_REQUESTS += 1
+            total_request = sim_params.total_request
+            if cls.EXPECTED_GENERATE_REQUESTS is None:
+                cls.EXPECTED_GENERATE_REQUESTS = total_request
+            elif cls.EXPECTED_GENERATE_REQUESTS != total_request:
+                raise RuntimeError(
+                    "Mismatched total_request in offline simulation: "
+                    f"expected={cls.EXPECTED_GENERATE_REQUESTS} got={total_request}"
+                )
+
+            trace_request_id = sim_params.trace_request_id  # Current dense turn id.
+            trace_prev_request_id = sim_params.trace_prev_request_id  # Redundant predecessor id for validation.
+            if trace_request_id is None:
+                cls._push_future_request(req, cls._request_ready_time(sim_params))
+                continue
+
+            if trace_request_id in cls.SEEN_TRACE_REQUEST_IDS:
+                raise RuntimeError(
+                    f"Duplicate trace request id received: {trace_request_id}"
+                )
+            expected_prev_request_id = cls._previous_trace_request_id(trace_request_id)
+            if trace_prev_request_id != expected_prev_request_id:
+                raise RuntimeError(
+                    "Trace dependency metadata is inconsistent: "
+                    f"trace_request_id={trace_request_id} "
+                    f"trace_prev_request_id={trace_prev_request_id} "
+                    f"expected_prev_request_id={expected_prev_request_id}"
+                )
+            cls.SEEN_TRACE_REQUEST_IDS.add(trace_request_id)
+            if (
+                trace_prev_request_id is None
+                or trace_prev_request_id in cls.COMPLETED_TRACE_REQUEST_IDS
+            ):
+                cls._push_future_request(req, cls._request_ready_time(sim_params))
+            else:
+                cls.PENDING_TRACE_REQUESTS[trace_request_id] = req
+
+        if (
+            cls.EXPECTED_GENERATE_REQUESTS is not None
+            and cls.RECEIVED_GENERATE_REQUESTS == cls.EXPECTED_GENERATE_REQUESTS
+        ):
+            cls.OFFLINE_RECV_ALL_REQUEST = True
+            heapq.heapify(cls.FUTURE_QUEUE)
+            logger.info("All requests received. Starting simulation now.")
+        elif cls.EXPECTED_GENERATE_REQUESTS is not None:
+            logger.info(
+                "Offline simulation mode enabled. %s requests expected in total. Received %s requests so far.",
+                cls.EXPECTED_GENERATE_REQUESTS,
+                cls.RECEIVED_GENERATE_REQUESTS,
+            )
+
+        return extra_requests
+
+    @classmethod
+    def _enqueue_ready_offline_requests(
+        cls, current_timestamp: float
+    ) -> list[TokenizedGenerateReqInput]:
+        """Return offline requests whose ready time has reached simulated time."""
+        recv_reqs: list[TokenizedGenerateReqInput] = []
+        while cls.OFFLINE_RECV_ALL_REQUEST and len(cls.FUTURE_QUEUE) > 0:
+            enqueue_time, _, req = cls.FUTURE_QUEUE[0]
+            if enqueue_time > current_timestamp:
+                break
+            recv_reqs.append(req)
+            heapq.heappop(cls.FUTURE_QUEUE)
+        return recv_reqs
+
+    @classmethod
+    def _release_trace_dependents(
+        cls,
+        trace_request_id: str | None,
+        predecessor_completion_time: float,
+    ) -> list[TokenizedGenerateReqInput]:
+        """Release the next trace turn made runnable by a completed predecessor."""
+        if (
+            trace_request_id is None
+            or trace_request_id in cls.COMPLETED_TRACE_REQUEST_IDS
+        ):
+            return []
+
+        cls.COMPLETED_TRACE_REQUEST_IDS.add(trace_request_id)
+        cls._log_trace_finish(trace_request_id, predecessor_completion_time)
+        child_trace_request_id = cls._next_trace_request_id(trace_request_id)
+        child = cls.PENDING_TRACE_REQUESTS.pop(child_trace_request_id, None)
+        if child is None:
+            return []
+
+        released: list[TokenizedGenerateReqInput] = []
+        child_sim_params = cls._get_simulation_params(child)
+        if child_sim_params is None:
+            logger.error(
+                "Dependent request is missing simulation parameters: predecessor=%s",
+                trace_request_id,
+            )
+            return released
+        ready_time = max(
+            child_sim_params.created_time,
+            predecessor_completion_time,
+        )
+        if child_sim_params.original_created_time is None:
+            child_sim_params.original_created_time = child_sim_params.created_time
+        child_sim_params.dependency_ready_time = ready_time
+        child_sim_params.created_time = ready_time
+        child_sim_params.queue_start = ready_time
+        cls._push_future_request(child, ready_time)
+        released.append(child)
+        return released
+
+    @classmethod
+    def _check_trace_dependency_invariants(cls):
+        """Validate that trace dependency state is drained before profile reset."""
+        errors = []
+        if cls.PENDING_TRACE_REQUESTS:
+            errors.append(
+                "Pending blocked trace requests remain: "
+                f"{sorted(cls.PENDING_TRACE_REQUESTS)}"
+            )
+        incomplete_trace_ids = (
+            cls.SEEN_TRACE_REQUEST_IDS - cls.COMPLETED_TRACE_REQUEST_IDS
+        )
+        if incomplete_trace_ids:
+            errors.append(
+                "Trace requests were seen but not completed before profile reset: "
+                f"{sorted(incomplete_trace_ids)}"
+            )
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    @classmethod
+    def _reset_trace_dependency_state(cls):
+        """Clear offline dependency state for the next simulation run."""
+        cls.FUTURE_QUEUE.clear()
+        cls.FUTURE_QUEUE_COUNTER = 0
+        cls.RECEIVED_GENERATE_REQUESTS = 0
+        cls.EXPECTED_GENERATE_REQUESTS = None
+        cls.PENDING_TRACE_REQUESTS.clear()
+        cls.COMPLETED_TRACE_REQUEST_IDS.clear()
+        cls.SEEN_TRACE_REQUEST_IDS.clear()
+        cls.OFFLINE_RECV_ALL_REQUEST = False
 
     @classmethod
     def hook(cls, target):
@@ -853,50 +1144,11 @@ class C_SchedulerHook(BaseHook):
                             # Such as: /profile_start, /flush_cache, etc.
                             extra_requests.append(req)
 
-                    # Add requests to future queue
-                    for req in gen_requests:
-                        sim_params = None
-                        if req.sampling_params.custom_params is not None:
-                            sim_params = req.sampling_params.custom_params.get(
-                                "simulation"
-                            )
-                        if sim_params is None:
-                            # There are some warm-up requests when starting the server without --skip-server-warmup.
-                            extra_requests.append(req)
-                            logger.warning(
-                                "Failed to extract the simulation parameters required for simulation from the request. Ignore this warning if the request is a warm-up request."
-                            )
-                            continue
-                        if sim_params.get("queue_start"):
-                            logger.debug(
-                                "Add request to waiting queue with custom queue start timestamp."
-                            )
-
-                        C_SchedulerHook.FUTURE_QUEUE.append(
-                            (
-                                sim_params.get("queue_start")
-                                or sim_params["created_time"],
-                                time.time_ns(),  # The request is not comparable, so add the salt to avoid comparison.
-                                req,
-                            )
+                    extra_requests.extend(
+                        C_SchedulerHook._ingest_offline_generate_requests(
+                            gen_requests
                         )
-
-                    if len(C_SchedulerHook.FUTURE_QUEUE) != 0:
-                        _, _, gen_req = C_SchedulerHook.FUTURE_QUEUE[-1]
-                        total_request = gen_req.sampling_params.custom_params[
-                            "simulation"
-                        ]["total_request"]
-
-                        if len(C_SchedulerHook.FUTURE_QUEUE) == total_request:
-                            C_SchedulerHook.OFFLINE_RECV_ALL_REQUEST = True
-                            heapq.heapify(C_SchedulerHook.FUTURE_QUEUE)
-                            logger.info(
-                                "All requests received. Starting simulation now."
-                            )
-                        else:
-                            logger.info(
-                                f"Offline simulation mode enabled. {total_request} requests expected in total. Received {len(C_SchedulerHook.FUTURE_QUEUE)} requests so far."
-                            )
+                    )
 
                     if len(extra_requests) != 0:
                         # Schedule the extra requests immediately.
@@ -907,15 +1159,9 @@ class C_SchedulerHook(BaseHook):
 
                 # Process the arrived requests only after all requests have been added to the future queue
                 current_timestamp = StateManager.get_global_clock()
-                while (
-                    C_SchedulerHook.OFFLINE_RECV_ALL_REQUEST
-                    and len(C_SchedulerHook.FUTURE_QUEUE) > 0
-                ):
-                    enqueue_time, _, req = C_SchedulerHook.FUTURE_QUEUE[0]
-                    if enqueue_time > current_timestamp:
-                        break
-                    recv_reqs.append(req)
-                    heapq.heappop(C_SchedulerHook.FUTURE_QUEUE)
+                recv_reqs.extend(
+                    C_SchedulerHook._enqueue_ready_offline_requests(current_timestamp)
+                )
 
             now = time.time()
             for req in recv_reqs:
@@ -927,22 +1173,25 @@ class C_SchedulerHook(BaseHook):
                     req_stats.rid = req.rid
                     req_stats.input_length = len(req.input_ids)
                     req_stats.output_length = req.sampling_params.max_new_tokens
-                    simulation_args = req.sampling_params.custom_params["simulation"]
+                    simulation_args = C_SchedulerHook._get_simulation_params(req)
+                    assert simulation_args is not None, f"Missing simulation parameters for generate request {req.rid}"
                     if C_SchedulerHook.SIM_MODE == MockSimulationMode.BLOCKING:
-                        if "server_created_time" not in simulation_args:
+                        if simulation_args.server_created_time is None:
                             logger.warning(
                                 "The request's creation time is missing, which may cause the TTFT to be inaccurate."
                             )
-                        req_stats.created_time = simulation_args.get(
-                            "server_created_time", now
+                        req_stats.created_time = (
+                            simulation_args.server_created_time
+                            if simulation_args.server_created_time is not None
+                            else now
                         )
                         req_stats.last_event_time = req_stats.created_time
                         req_stats.queue_start = now
                     elif C_SchedulerHook.SIM_MODE == MockSimulationMode.OFFLINE:
-                        req_stats.created_time = simulation_args["created_time"]
+                        req_stats.created_time = simulation_args.created_time
                         req_stats.last_event_time = req_stats.created_time
                         # Align with the real queue start timestamp if queue_start is not None. For debugging only.
-                        queue_start = simulation_args.get("queue_start")
+                        queue_start = simulation_args.queue_start
                         if queue_start is not None:
                             StateManager.set_global_clock(queue_start)
                         req_stats.queue_start = StateManager.get_global_clock()
@@ -1052,7 +1301,19 @@ class C_SchedulerHook(BaseHook):
                     return ret
 
                 hicache_l2_load_dur = StateManager.pop_hicache_l2_load_dur()
+                hicache_l2_load_segment_overhead_dur = (
+                    StateManager.pop_hicache_l2_load_segment_overhead_dur()
+                )
+                hicache_l2_load_bytes_bw_dur = (
+                    StateManager.pop_hicache_l2_load_bytes_bw_dur()
+                )
                 hicache_l2_backup_dur = StateManager.pop_hicache_l2_backup_dur()
+                hicache_l2_backup_segment_overhead_dur = (
+                    StateManager.pop_hicache_l2_backup_segment_overhead_dur()
+                )
+                hicache_l2_backup_bytes_bw_dur = (
+                    StateManager.pop_hicache_l2_backup_bytes_bw_dur()
+                )
                 current_inference_dur = StateManager.get_current_inference_dur()
 
                 if C_SchedulerHook.OVERLAP_SCHEDULE:
@@ -1082,6 +1343,18 @@ class C_SchedulerHook(BaseHook):
                             - req_stats.last_event_time  # queue duration
                         )
                         req_stats.last_event_time = request_response_time
+                        sim_params = C_SchedulerHook._get_simulation_params(req)
+                        # https://github.com/sgl-project/sglang/blob/v0.5.6.post2/python/sglang/srt/managers/schedule_batch.py#L781-L783
+                        finished = getattr(req, "finished", None)
+                        if callable(finished) and finished():
+                            C_SchedulerHook._release_trace_dependents(
+                                trace_request_id=(
+                                    sim_params.trace_request_id
+                                    if sim_params is not None
+                                    else None
+                                ),
+                                predecessor_completion_time=request_response_time,
+                            )
                     else:
                         # Chunked request: nothing to do
                         pass
@@ -1096,7 +1369,17 @@ class C_SchedulerHook(BaseHook):
                         "requests": C_SchedulerHook.HISIM_BATCH.request_info(),
                         "forward_latency": current_inference_dur,
                         "l2_load_latency": hicache_l2_load_dur,
+                        "l2_load_segment_overhead_latency": (
+                            hicache_l2_load_segment_overhead_dur
+                        ),
+                        "l2_load_bytes_bw_latency": hicache_l2_load_bytes_bw_dur,
                         "l2_backup_latency": hicache_l2_backup_dur,
+                        "l2_backup_segment_overhead_latency": (
+                            hicache_l2_backup_segment_overhead_dur
+                        ),
+                        "l2_backup_bytes_bw_latency": (
+                            hicache_l2_backup_bytes_bw_dur
+                        ),
                         "l2_available_tokens": l2_available,
                         "l2_total_tokens": l2_total,
                     }
@@ -1152,12 +1435,13 @@ class C_SchedulerHook(BaseHook):
             else:
                 logger.warning("No request statistics available.")
 
+            C_SchedulerHook._check_trace_dependency_invariants()
             StateManager.reset()
             C_SchedulerHook.REQUEST_STATS.clear()
             C_SchedulerHook.ITERATION_STATS.clear()
             C_SchedulerHook.LAST_CPU_TS = 0
             C_SchedulerHook.LAST_FLUSH_TS = time.time()
-            C_SchedulerHook.OFFLINE_RECV_ALL_REQUEST = False
+            C_SchedulerHook._reset_trace_dependency_state()
 
             ProfileReqOutput = getattr(
                 importlib.import_module("sglang.srt.managers.io_struct"),

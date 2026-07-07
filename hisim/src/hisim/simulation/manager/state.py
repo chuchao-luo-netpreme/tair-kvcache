@@ -4,7 +4,11 @@ class StateManager:
     _last_inference_dur: float = 0
     _current_inference_dur: float = 0
     _hicache_l2_load_dur: float = 0
+    _hicache_l2_load_segment_overhead_dur: float = 0
+    _hicache_l2_load_bytes_bw_dur: float = 0
     _hicache_l2_backup_dur: float = 0
+    _hicache_l2_backup_segment_overhead_dur: float = 0
+    _hicache_l2_backup_bytes_bw_dur: float = 0
 
     @classmethod
     def reset(cls):
@@ -13,7 +17,11 @@ class StateManager:
         cls._last_inference_dur = 0
         cls._current_inference_dur = 0
         cls._hicache_l2_backup_dur = 0
+        cls._hicache_l2_backup_segment_overhead_dur = 0
+        cls._hicache_l2_backup_bytes_bw_dur = 0
         cls._hicache_l2_load_dur = 0
+        cls._hicache_l2_load_segment_overhead_dur = 0
+        cls._hicache_l2_load_bytes_bw_dur = 0
 
     @classmethod
     def inc_iteration(cls) -> None:
@@ -28,8 +36,24 @@ class StateManager:
         cls._hicache_l2_load_dur += dur
 
     @classmethod
+    def inc_hicache_l2_load_segment_overhead_dur(cls, dur: float) -> None:
+        cls._hicache_l2_load_segment_overhead_dur += dur
+
+    @classmethod
+    def inc_hicache_l2_load_bytes_bw_dur(cls, dur: float) -> None:
+        cls._hicache_l2_load_bytes_bw_dur += dur
+
+    @classmethod
     def inc_hicache_l2_backup_dur(cls, dur: float) -> None:
         cls._hicache_l2_backup_dur += dur
+
+    @classmethod
+    def inc_hicache_l2_backup_segment_overhead_dur(cls, dur: float) -> None:
+        cls._hicache_l2_backup_segment_overhead_dur += dur
+
+    @classmethod
+    def inc_hicache_l2_backup_bytes_bw_dur(cls, dur: float) -> None:
+        cls._hicache_l2_backup_bytes_bw_dur += dur
 
     @classmethod
     def pop_hicache_l2_load_dur(cls) -> float:
@@ -38,9 +62,33 @@ class StateManager:
         return dur
 
     @classmethod
+    def pop_hicache_l2_load_segment_overhead_dur(cls) -> float:
+        dur = cls._hicache_l2_load_segment_overhead_dur
+        cls._hicache_l2_load_segment_overhead_dur = 0
+        return dur
+
+    @classmethod
+    def pop_hicache_l2_load_bytes_bw_dur(cls) -> float:
+        dur = cls._hicache_l2_load_bytes_bw_dur
+        cls._hicache_l2_load_bytes_bw_dur = 0
+        return dur
+
+    @classmethod
     def pop_hicache_l2_backup_dur(cls) -> float:
         dur = cls._hicache_l2_backup_dur
         cls._hicache_l2_backup_dur = 0
+        return dur
+
+    @classmethod
+    def pop_hicache_l2_backup_segment_overhead_dur(cls) -> float:
+        dur = cls._hicache_l2_backup_segment_overhead_dur
+        cls._hicache_l2_backup_segment_overhead_dur = 0
+        return dur
+
+    @classmethod
+    def pop_hicache_l2_backup_bytes_bw_dur(cls) -> float:
+        dur = cls._hicache_l2_backup_bytes_bw_dur
+        cls._hicache_l2_backup_bytes_bw_dur = 0
         return dur
 
     @classmethod

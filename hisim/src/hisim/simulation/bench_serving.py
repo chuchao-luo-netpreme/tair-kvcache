@@ -50,6 +50,7 @@ from transformers import (
     PreTrainedTokenizerBase,
     PreTrainedTokenizerFast,
 )
+from hisim.simulation.types import SimulationParams
 
 ASSISTANT_SUFFIX = "Assistant:"
 
@@ -90,7 +91,7 @@ class RequestFuncInput:
     image_data: Optional[List[str]]
     extra_request_body: Dict[str, Any]
     timestamp: Optional[float] = None
-    simulation: Optional[dict] = None
+    simulation: Optional[SimulationParams] = None
 
 
 @dataclass
@@ -564,7 +565,13 @@ async def async_request_sglang_generate(
                 "temperature": 0.0,
                 "max_new_tokens": request_func_input.output_len,
                 "ignore_eos": not args.disable_ignore_eos,
-                "custom_params": {"simulation": request_func_input.simulation},
+                "custom_params": {
+                    "simulation": (
+                        request_func_input.simulation.to_dict()
+                        if request_func_input.simulation is not None
+                        else None
+                    )
+                },
             },
             "stream": not args.disable_stream,
             "lora_path": request_func_input.lora_name,
@@ -934,6 +941,9 @@ class BenchmarkMetrics:
     max_output_tokens_per_s: float = 0.0
     max_concurrent_requests: int = 0
     mean_queue_ms: float = 0.0
+    mean_ttft_excluding_queue_ms: float = -1.0
+    median_ttft_excluding_queue_ms: float = -1.0
+    p99_ttft_excluding_queue_ms: float = -1.0
     prefix_cache_reused_ratio: float = 0.0
     disk_prefetch_ratio: float = 0.0
 
@@ -1009,13 +1019,29 @@ class DatasetRow:
     vision_prompt_len: Optional[int] = None
     image_data: Optional[List[str]] = None
     timestamp: Optional[float] = None
-    simulation: Optional[dict] = field(default_factory=dict)
+    simulation: SimulationParams = field(default_factory=SimulationParams)
 
     def __post_init__(self):
         if self.text_prompt_len is None:
             self.text_prompt_len = self.prompt_len
         if self.vision_prompt_len is None:
             self.vision_prompt_len = 0
+        self.ensure_simulation_params()
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self.__post_init__()
+
+    def ensure_simulation_params(self) -> SimulationParams:
+        """Return simulation metadata as a SimulationParams object."""
+        if self.simulation is None:
+            self.simulation = SimulationParams()
+        elif not isinstance(self.simulation, SimulationParams):
+            raise TypeError(
+                "DatasetRow.simulation must be SimulationParams or None; "
+                f"got {type(self.simulation).__name__}"
+            )
+        return self.simulation
 
 
 async def get_mooncake_request_over_time(
@@ -1676,6 +1702,81 @@ def get_agentic_trace_cache_path(
     return cache_dir / f"codex_swebenchpro_traces_{digest.hexdigest()[:16]}.pkl"
 
 
+def _is_valid_agentic_trace_cache(input_requests: object) -> bool:
+    """Return whether cached codex trace rows match the current dependency schema."""
+    # pickle.load() can return stale or corrupt objects, so validate from object.
+    if not isinstance(input_requests, list) or len(input_requests) == 0:
+        return False
+
+    next_turn_by_session: dict[int, int] = {}
+    for row in input_requests:
+        if not isinstance(row, DatasetRow):
+            return False
+        simulation = row.simulation
+        if not isinstance(simulation, SimulationParams):
+            return False
+
+        if (
+            simulation.trace_session_id is None
+            or simulation.trace_turn_index is None
+            or simulation.trace_request_id is None
+        ):
+            return False
+
+        trace_session_id = simulation.trace_session_id
+        trace_turn_index = simulation.trace_turn_index
+        trace_request_id = simulation.trace_request_id
+        trace_prev_request_id = simulation.trace_prev_request_id
+        if not isinstance(trace_session_id, int) or not isinstance(
+            trace_turn_index, int
+        ):
+            return False
+
+        expected_turn_index = next_turn_by_session.get(trace_session_id, 0)
+        expected_trace_request_id = f"{trace_session_id}:{trace_turn_index}"
+        expected_trace_prev_request_id = (
+            None
+            if trace_turn_index == 0
+            else f"{trace_session_id}:{trace_turn_index - 1}"
+        )
+        if (
+            trace_turn_index != expected_turn_index
+            or trace_request_id != expected_trace_request_id
+            or trace_prev_request_id != expected_trace_prev_request_id
+        ):
+            return False
+        next_turn_by_session[trace_session_id] = trace_turn_index + 1
+
+    return True
+
+
+def _format_agentic_trace_turn_distribution(
+    input_requests: list[DatasetRow],
+) -> str:
+    """Return a compact per-turn count summary for codex trace requests."""
+    turn_counts: dict[int, int] = {}
+    for row in input_requests:
+        trace_turn_index = row.simulation.trace_turn_index
+        if isinstance(trace_turn_index, int):
+            turn_number = trace_turn_index + 1
+            turn_counts[turn_number] = turn_counts.get(turn_number, 0) + 1
+
+    return ", ".join(
+        f"turn{turn_number}: {turn_counts[turn_number]}"
+        for turn_number in sorted(turn_counts)
+    )
+
+
+def _print_agentic_trace_request_summary(input_requests: list[DatasetRow]) -> None:
+    """Print the codex trace request summary for this benchmark run."""
+    print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
+    print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
+    print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+    turn_distribution = _format_agentic_trace_turn_distribution(input_requests)
+    if turn_distribution:
+        print(f"#Codex trace turn distribution: {turn_distribution}")
+
+
 def sample_generated_shared_prefix_requests(
     num_groups: int,
     prompts_per_group: int,
@@ -1823,12 +1924,25 @@ def sample_agentic_trace_requests(
 
     if cache_path.exists():
         print(f"Loading cached codex-swebenchpro-traces requests from {cache_path}")
-        with open(cache_path, "rb") as f:
-            input_requests = pickle.load(f)
-        print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
-        print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
-        print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
-        return input_requests
+        try:
+            with open(cache_path, "rb") as f:
+                input_requests = pickle.load(f)
+        except Exception as e:
+            print(
+                f"Failed to load cached codex-swebenchpro-traces requests: {e}. "
+                "Removing stale cache and regenerating."
+            )
+            cache_path.unlink(missing_ok=True)
+        else:
+            if _is_valid_agentic_trace_cache(input_requests):
+                _print_agentic_trace_request_summary(input_requests)
+                return input_requests
+
+            print(
+                "Cached codex-swebenchpro-traces requests do not match the "
+                "current dependency schema. Removing stale cache and regenerating."
+            )
+            cache_path.unlink(missing_ok=True)
 
     if dataset_path and os.path.exists(dataset_path):
         print(f"Loading codex-swebenchpro-traces from local file: {dataset_path}")
@@ -1841,14 +1955,25 @@ def sample_agentic_trace_requests(
         raw_conversations = list(hf_ds["train"])
 
     input_requests: List[DatasetRow] = []
-    for conv_data in tqdm(raw_conversations, desc="Tokenizing codex traces"):
+    for conv_idx, conv_data in enumerate(
+        tqdm(raw_conversations, desc="Tokenizing codex traces")
+    ):
         if num_requests and len(input_requests) >= num_requests:
             break
         turns = conv_data.get("conversations", conv_data.get("conversation", []))
         messages: List[dict] = []
+        assistant_turn_index = 0
         for turn in turns:
             role = "user" if turn["from"] == "human" else "assistant"
             if role == "assistant":
+                trace_turn_index = assistant_turn_index
+                trace_request_id = f"{conv_idx}:{trace_turn_index}"
+                trace_prev_request_id = (
+                    None
+                    if trace_turn_index == 0
+                    else f"{conv_idx}:{trace_turn_index - 1}"
+                )
+                assistant_turn_index += 1
                 try:
                     if return_text:
                         prompt = tokenizer.apply_chat_template(
@@ -1870,16 +1995,20 @@ def sample_agentic_trace_requests(
                 output_len = len(output_ids)
                 # Prune too short sequences (copied from sharegpt).
                 if input_len < 2 or output_len < 2:
-                    messages.append({"role": role, "content": turn["value"]})
-                    continue
+                    break
                 if context_len and input_len + output_len > context_len:
-                    messages.append({"role": role, "content": turn["value"]})
-                    continue
+                    break
                 input_requests.append(
                     DatasetRow(
                         prompt=prompt if return_text else input_ids,
                         prompt_len=input_len,
                         output_len=output_len,
+                        simulation=SimulationParams(
+                            trace_session_id=conv_idx,
+                            trace_turn_index=trace_turn_index,
+                            trace_request_id=trace_request_id,  # Current turn id.
+                            trace_prev_request_id=trace_prev_request_id,  # Previous dense turn id.
+                        ),
                     )
                 )
                 if num_requests and len(input_requests) >= num_requests:
@@ -1898,9 +2027,7 @@ def sample_agentic_trace_requests(
             f"but only {len(input_requests)} valid requests were available."
         )
 
-    print(f"#codex-swebenchpro-traces requests unfolded: {len(input_requests)}")
-    print(f"#Input tokens (total):  {np.sum([x.prompt_len for x in input_requests])}")
-    print(f"#Output tokens (total): {np.sum([x.output_len for x in input_requests])}")
+    _print_agentic_trace_request_summary(input_requests)
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Caching codex-swebenchpro-traces requests to {cache_path}")
@@ -1972,13 +2099,11 @@ async def get_request(
             trace_time_s = (request.timestamp - trace_start_time) / timestamp_scale_s
             target_arrival_time = start_time + (trace_time_s * slowdown_factor)
             # Hisim: simulation arguments
-            request.simulation.update(
-                {
-                    "created_time": (request.timestamp - trace_start_time)
-                    / timestamp_scale_s,
-                    "total_request": len(input_requests),
-                }
-            )
+            simulation = request.ensure_simulation_params()
+            simulation.created_time = (
+                request.timestamp - trace_start_time
+            ) / timestamp_scale_s
+            simulation.total_request = len(input_requests)
 
             sleep_duration = target_arrival_time - time.perf_counter()
             if sleep_duration > 0 and args.bench_mode != "simulation":
@@ -1989,12 +2114,9 @@ async def get_request(
         input_requests_iter = iter(input_requests)
         start_time = 0
         for request in input_requests_iter:
-            request.simulation.update(
-                {
-                    "created_time": start_time,
-                    "total_request": len(input_requests),
-                }
-            )
+            simulation = request.ensure_simulation_params()
+            simulation.created_time = start_time
+            simulation.total_request = len(input_requests)
             yield request
 
             if request_rate == float("inf"):
@@ -2556,6 +2678,24 @@ async def benchmark(
     print("{:<40} {:<10.2f}".format("Median TTFT (ms):", metrics.median_ttft_ms))
     print("{:<40} {:<10.2f}".format("P99 TTFT (ms):", metrics.p99_ttft_ms))
     print(
+        "{:<40} {:<10.2f}".format(
+            "Mean TTFT excl. Queue (ms):",
+            metrics.mean_ttft_excluding_queue_ms,
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Median TTFT excl. Queue (ms):",
+            metrics.median_ttft_excluding_queue_ms,
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "P99 TTFT excl. Queue (ms):",
+            metrics.p99_ttft_excluding_queue_ms,
+        )
+    )
+    print(
         "{s:{c}^{n}}".format(s="Time per Output Token (excl. 1st token)", n=50, c="-")
     )
     print("{:<40} {:<10.2f}".format("Mean TPOT (ms):", metrics.mean_tpot_ms))
@@ -2611,6 +2751,11 @@ async def benchmark(
             "std_ttft_ms": metrics.std_ttft_ms,
             "p99_ttft_ms": metrics.p99_ttft_ms,
             "mean_queue_ms": metrics.mean_queue_ms,
+            "mean_ttft_excluding_queue_ms": metrics.mean_ttft_excluding_queue_ms,
+            "median_ttft_excluding_queue_ms": (
+                metrics.median_ttft_excluding_queue_ms
+            ),
+            "p99_ttft_excluding_queue_ms": metrics.p99_ttft_excluding_queue_ms,
             "mean_tpot_ms": metrics.mean_tpot_ms,
             "median_tpot_ms": metrics.median_tpot_ms,
             "std_tpot_ms": metrics.std_tpot_ms,

@@ -18,6 +18,8 @@ ChartFactory = Callable[[], ChartSpec]
 
 CHART_REGISTRY: dict[str, ChartFactory] = {
     "ttft_mean_median": ttft.mean_median,
+    "ttft_excluding_queue_mean_median": ttft.excluding_queue_mean_median,
+    "ttft_excluding_queue_mean_median_p99": ttft.excluding_queue_mean_median_p99,
     "ttft_median": ttft.median,
     "ttft_mean": ttft.mean,
     "tpot_mean_median": tpot.mean_median,
@@ -30,6 +32,7 @@ CHART_REGISTRY: dict[str, ChartFactory] = {
 
 DEFAULT_CHARTS = (
     "ttft_mean_median",
+    "ttft_excluding_queue_mean_median_p99",
     "tpot_mean_median",
     "itl_mean_median",
     "prefix_cache_reused",

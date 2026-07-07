@@ -15,9 +15,12 @@ Starts a fresh server for each combination (HISIM_RESET_HICACHE_STORAGE=1).
 
 Options:
   --port PORT                   Server port (default: 12345).
+  --model-path PATH             HuggingFace model path (default: Qwen/Qwen3-32B-FP8).
+  --sim-config PATH             Sim config JSON path (default: test/assets/mock/config.qwen3_32b_fp8.h100.json).
   --rates RATES                 Comma-separated request rates (default: 1).
   --hicache-size SIZES          Comma-separated L2 DRAM cache sizes in GB (default: 350).
   --hicache-rw-bandwidth BWS    Comma-separated DRAM read+write bandwidths in GB/s (default: 64,128,256,512,900,1024).
+  --max-running-requests N      Maximum concurrent running requests (default: unset).
   --gsp-num-groups N            Number of shared-prefix groups (default: 64).
   --gsp-prompts-per-group N     Number of prompts per group (default: 8).
   --gsp-system-prompt-len N     Shared system prompt length in tokens (default: 12000).
@@ -37,9 +40,12 @@ EOF
 }
 
 PORT=12345
+MODEL_PATH="Qwen/Qwen3-32B-FP8"
+SIM_CONFIG="test/assets/mock/config.qwen3_32b_fp8.h100.json"
 RATES="1"
 HICACHE_SIZES="350"
 HICACHE_BWS="64,128,256,512,900,1024"
+MAX_RUNNING_REQUESTS=""
 GSP_NUM_GROUPS="64"
 GSP_PROMPTS_PER_GROUP="8"
 GSP_SYSTEM_PROMPT_LEN="12000"
@@ -52,9 +58,12 @@ SERVER_PID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --port)                   PORT="$2";                  shift 2 ;;
+    --model-path)             MODEL_PATH="$2";            shift 2 ;;
+    --sim-config)             SIM_CONFIG="$2";            shift 2 ;;
     --rates)                  RATES="$2";                 shift 2 ;;
     --hicache-size)           HICACHE_SIZES="$2";         shift 2 ;;
     --hicache-rw-bandwidth)   HICACHE_BWS="$2";           shift 2 ;;
+    --max-running-requests)   MAX_RUNNING_REQUESTS="$2";  shift 2 ;;
     --gsp-num-groups)         GSP_NUM_GROUPS="$2";        shift 2 ;;
     --gsp-prompts-per-group)  GSP_PROMPTS_PER_GROUP="$2"; shift 2 ;;
     --gsp-system-prompt-len)  GSP_SYSTEM_PROMPT_LEN="$2"; shift 2 ;;
@@ -76,12 +85,21 @@ start_server() {
   local bw="$2"
   local log_file="$3"
   local sim_output_dir="$4"
+  local max_running_requests_args=()
+  if [[ -n "${MAX_RUNNING_REQUESTS}" ]]; then
+    max_running_requests_args=(
+      --max-running-requests "${MAX_RUNNING_REQUESTS}"
+    )
+  fi
   HISIM_OUTPUT_DIR="${sim_output_dir}" \
     setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
+    --model-path "${MODEL_PATH}" \
+    --sim-config "${SIM_CONFIG}" \
     --port "${PORT}" \
     --hicache-size "${size}" \
     --read-bw "${bw}" \
     --write-bw "${bw}" \
+    "${max_running_requests_args[@]}" \
     > "${log_file}" 2>&1 &
   SERVER_PID=$!
   until curl -sf "http://localhost:${PORT}/v1/models" > /dev/null 2>&1; do

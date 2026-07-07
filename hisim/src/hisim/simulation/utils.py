@@ -76,6 +76,7 @@ def estimate_kv_cache_pool_capacity(
 
 def calc_metrics(requests: list[RequestStats]) -> dict:
     ttfts = []
+    ttfts_excluding_queue = []
     tpots = []
     itls = []
     e2e_latencies = []
@@ -98,8 +99,11 @@ def calc_metrics(requests: list[RequestStats]) -> dict:
             )
             continue
         completed += 1
-        ttfts.append(req.gen_token_latencies[0])
-        queue_durs.append(req.queue_end - req.queue_start)
+        ttft = req.gen_token_latencies[0]
+        queue_dur = req.queue_end - req.queue_start
+        ttfts.append(ttft)
+        ttfts_excluding_queue.append(ttft - queue_dur)
+        queue_durs.append(queue_dur)
         if len(req.gen_token_latencies) > 1:
             # output length > 1
             tpots.append(np.mean(req.gen_token_latencies[1:]))
@@ -133,6 +137,13 @@ def calc_metrics(requests: list[RequestStats]) -> dict:
         "p95_ttft_ms": np.percentile(ttfts or 0, 95) * 1000,
         "p99_ttft_ms": np.percentile(ttfts or 0, 99) * 1000,
         "mean_queue_ms": np.mean(queue_durs or 0) * 1000,
+        "mean_ttft_excluding_queue_ms": np.mean(ttfts_excluding_queue or 0) * 1000,
+        "median_ttft_excluding_queue_ms": (
+            np.median(ttfts_excluding_queue or 0) * 1000
+        ),
+        "p99_ttft_excluding_queue_ms": (
+            np.percentile(ttfts_excluding_queue or 0, 99) * 1000
+        ),
         "mean_tpot_ms": np.mean(tpots or 0) * 1000,
         "median_tpot_ms": np.median(tpots or 0) * 1000,
         "std_tpot_ms": np.std(tpots or 0) * 1000,

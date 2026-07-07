@@ -19,6 +19,8 @@ Options:
   --agentic-trace-context-len N  Drop turns where input+output exceeds N tokens (default: unset).
   --hicache-size SIZES          Comma-separated L2 DRAM cache sizes in GB (default: 500).
   --hicache-rw-bandwidth BWS    Comma-separated DRAM read+write bandwidths in GB/s (default: 64).
+  --max-total-tokens N          Maximum HBM KV cache tokens (default: unset).
+  --page-size N                 KV cache page size in tokens (default: 64).
   --output-dir DIR              Directory for results (default: ./codex_bench_metrics).
   -h, --help                    Show this help message and exit.
 
@@ -37,6 +39,9 @@ NUM_PROMPTS="100"
 AGENTIC_TRACE_CONTEXT_LEN=""
 HICACHE_SIZES="500"
 HICACHE_BWS="64"
+MAX_RUNNING_REQUESTS=""
+MAX_TOTAL_TOKENS=""
+PAGE_SIZE="64"
 OUTPUT_DIR="${SCRIPT_DIR}/codex_bench_metrics"
 SERVER_PID=""
 
@@ -48,6 +53,8 @@ while [[ $# -gt 0 ]]; do
     --agentic-trace-context-len) AGENTIC_TRACE_CONTEXT_LEN="$2"; shift 2 ;;
     --hicache-size)        HICACHE_SIZES="$2"; shift 2 ;;
     --hicache-rw-bandwidth) HICACHE_BWS="$2"; shift 2 ;;
+    --max-total-tokens)    MAX_TOTAL_TOKENS="$2"; shift 2 ;;
+    --page-size)           PAGE_SIZE="$2";    shift 2 ;;
     --output-dir)          OUTPUT_DIR="$2";   shift 2 ;;
     -h|--help)             usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -63,12 +70,20 @@ start_server() {
   local bw="$2"
   local log_file="$3"
   local sim_output_dir="$4"
+  local max_total_tokens_args=()
+  if [[ -n "${MAX_TOTAL_TOKENS}" ]]; then
+    max_total_tokens_args=(
+      --max-total-tokens "${MAX_TOTAL_TOKENS}"
+    )
+  fi
   HISIM_OUTPUT_DIR="${sim_output_dir}" \
   setsid "${SCRIPT_DIR}/h100-launch-server.sh" \
-    --model-path "openai/gpt-oss-120b" \
-    --sim-config "test/assets/mock/config.gpt-oss-120b.h100.json" \
+    --model-path "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8" \
+    --sim-config "test/assets/mock/config.qwen3_235b.b200.json" \
     --port "${PORT}" \
     --hicache-size "${size}" \
+    --page-size "${PAGE_SIZE}" \
+    "${max_total_tokens_args[@]}" \
     --read-bw "${bw}" \
     --write-bw "${bw}" \
     > "${log_file}" 2>&1 &
@@ -132,7 +147,6 @@ for size in "${hicache_sizes[@]}"; do
       mkdir -p "${OUTPUT_DIR}" "${OUTPUT_DIR}/logs" "${SIM_OUTPUT_DIR}"
       echo "${PREFIX} — starting server..."
       start_server "${size}" "${bw}" "${LOG_PREFIX}_server.log" "${SIM_OUTPUT_DIR}"
-      echo "The server is fired up and ready to roll!"
       echo "${PREFIX} — testing..."
       bench "${rate}" "${LOG_PREFIX}_bench.log" "${SIM_OUTPUT_DIR}"
       echo "${PREFIX} — shutting down..."

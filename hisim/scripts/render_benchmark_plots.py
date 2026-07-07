@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Render selected benchmark charts with the modular plotting pipeline."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +12,7 @@ from bench_plots.presets import CHART_REGISTRY, DEFAULT_CHARTS, chart_specs
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse chart selection, input, x-axis, and output options."""
     parser = argparse.ArgumentParser(
         description="Render selected benchmark metric charts from parsed run data."
     )
@@ -40,6 +43,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_chart_names(raw: str) -> list[str]:
+    """Validate and normalize a comma-separated chart name list."""
     names = [name.strip() for name in raw.split(",") if name.strip()]
     if not names:
         raise SystemExit("No charts selected")
@@ -53,6 +57,7 @@ def parse_chart_names(raw: str) -> list[str]:
 
 
 def default_output(input_dir: Path, x_axis: str, chart_names: list[str]) -> Path:
+    """Build the default output path for the selected chart set."""
     x_name = x_axis.replace("-", "_")
     if tuple(chart_names) == DEFAULT_CHARTS:
         return input_dir / f"modular_{X_AXIS_CONFIG[x_axis]['output_name']}"
@@ -60,6 +65,7 @@ def default_output(input_dir: Path, x_axis: str, chart_names: list[str]) -> Path
 
 
 def main() -> None:
+    """Load benchmark rows and render the requested charts."""
     args = parse_args()
     if args.list_charts:
         for name in sorted(CHART_REGISTRY):
